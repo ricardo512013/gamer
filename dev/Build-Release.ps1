@@ -1,9 +1,12 @@
 ﻿# =====================================================================
 # Build-Release.ps1 - Gera o pacote de distribuição (sem a pasta dev\)
 #   1. confere a sintaxe de todos os .ps1 (para no primeiro erro)
-#   2. compila src\Core\Controls.cs em bin\TISuite.Controls.dll (+ carimbo)
-#   3. calcula o SHA256 de cada arquivo do app e grava manifest.sha256
-#   4. monta dist\TI-Suite-vX.Y.Z.zip (sem dev\, logs\, inventario\, config.json, .git)
+#   2. roda dev\Test-Logic.ps1 (para se algum teste falhar)
+#   3. compila src\Core\Controls.cs em bin\TISuite.Controls.dll (+ carimbo)
+#   4. monta o pacote numa pasta temporária e grava nela o manifest.sha256
+#      (só código: .ps1, .cs, .cmd e bin\*; documentação e portable.config ficam de fora)
+#   5. cria dist\TI-Suite-vX.Y.Z.zip (sem dev\, logs\, inventario\, config.json da máquina, .git)
+# O manifesto vai só no pacote: na pasta do projeto ele travaria o app a cada edição.
 # Uso:  powershell -NoProfile -ExecutionPolicy Bypass -File .\dev\Build-Release.ps1
 # =====================================================================
 $ErrorActionPreference = 'Stop'
@@ -36,7 +39,17 @@ foreach ($f in $psFiles) {
 if ($bad -gt 0) { Write-Host 'Build cancelado: corrija os erros de sintaxe acima.' -ForegroundColor Red; exit 1 }
 Write-Host ('Sintaxe: {0} arquivos OK' -f $psFiles.Count) -ForegroundColor Green
 
-# 2. DLL dos controles -------------------------------------------------
+# 2. Testes das regras (processo separado: não carrega nada neste) -------------
+$testScript = Join-Path $root 'dev\Test-Logic.ps1'
+if (-not (Test-Path -LiteralPath $testScript)) { Write-Host 'Build cancelado: dev\Test-Logic.ps1 não encontrado.' -ForegroundColor Red; exit 1 }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $testScript
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ('Build cancelado: dev\Test-Logic.ps1 falhou (código {0}).' -f $LASTEXITCODE) -ForegroundColor Red
+    exit 1
+}
+Write-Host 'Testes: OK' -ForegroundColor Green
+
+# 3. DLL dos controles -------------------------------------------------
 $cs     = Join-Path $root 'src\Core\Controls.cs'
 $binDir = Join-Path $root 'bin'
 $dll    = Join-Path $binDir 'TISuite.Controls.dll'
@@ -54,12 +67,17 @@ Add-Type -TypeDefinition $src -ReferencedAssemblies System.dll, System.Drawing.d
 (Get-FileHash -LiteralPath $cs -Algorithm SHA256).Hash | Set-Content -LiteralPath $stamp -Encoding ASCII
 Write-Host ('DLL: {0}' -f $dll) -ForegroundColor Green
 
-# 3. Manifesto de integridade ----------------------------------------------
-$excludeDirs  = @('dev', 'logs', 'dist', '.git', 'inventario')
+# 4. Arquivos do pacote e manifesto de integridade ---------------------------
+# dados de campo (laudos, relatórios, perfis de Wi-Fi com senha) nunca vão para o pacote
+$excludeDirs  = @('dev', 'logs', 'dist', '.git', 'inventario', 'laudos', 'relatorios', 'wifi')
 $excludeFiles = @('manifest.sha256', 'config.json', 'exceptions.log', 'crash.log', 'audit.csv', 'inventario.csv')
 
+function Get-RelPath([System.IO.FileInfo]$f) {
+    return $f.FullName.Substring($root.Length).TrimStart('\', '/')
+}
+
 function Test-Included([System.IO.FileInfo]$f) {
-    $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/')
+    $rel = Get-RelPath $f
     $first = ($rel -split '[\\/]')[0]
     if ($excludeDirs -contains $first) { return $false }
     if ($excludeFiles -contains $f.Name) { return $false }
@@ -67,35 +85,48 @@ function Test-Included([System.IO.FileInfo]$f) {
     return $true
 }
 
-$files = @(Get-ChildItem -LiteralPath $root -Recurse -File -Force | Where-Object { Test-Included $_ } | Sort-Object FullName)
-$lines = foreach ($f in $files) {
-    $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
-    '{0} *{1}' -f (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash, $rel
+# O manifesto confere só o que roda: .ps1, .cs, .cmd e bin\*. README.md, CHANGELOG.md,
+# .gitignore e portable.config vão no pacote, mas editar ou apagar um deles (o README
+# manda apagar o portable.config para o modo instalado) não pode travar a abertura.
+function Test-InManifest([System.IO.FileInfo]$f) {
+    $first = ((Get-RelPath $f) -split '[\\/]')[0]
+    if ($first -eq 'bin') { return $true }
+    return (@('.ps1', '.cs', '.cmd') -contains $f.Extension.ToLowerInvariant())
 }
-$manifest = Join-Path $root 'manifest.sha256'
-Set-Content -LiteralPath $manifest -Value $lines -Encoding UTF8
-Write-Host ('Manifesto: {0} arquivos' -f @($files).Count) -ForegroundColor Green
 
-# 4. Pacote -------------------------------------------------------------
-# config.json padrão (sem dados da máquina de desenvolvimento)
+$files = @(Get-ChildItem -LiteralPath $root -Recurse -File -Force | Where-Object { Test-Included $_ } | Sort-Object FullName)
+$lines = @(foreach ($f in ($files | Where-Object { Test-InManifest $_ })) {
+    $rel = (Get-RelPath $f).Replace('\', '/')
+    '{0} *{1}' -f (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash, $rel
+})
+
+# Manifesto de builds antigos na pasta do projeto: travaria o app depois de qualquer edição
+$oldManifest = Join-Path $root 'manifest.sha256'
+if (Test-Path -LiteralPath $oldManifest) {
+    Remove-Item -LiteralPath $oldManifest -Force
+    Write-Host 'Removido manifest.sha256 antigo da pasta do projeto (agora ele vai só no pacote).' -ForegroundColor DarkGray
+}
+
+# 5. Pacote -------------------------------------------------------------
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) ('ti-suite-stage-' + [guid]::NewGuid().ToString('N'))
 $dst = Join-Path $stage 'TI-Suite'
 New-Item -ItemType Directory -Path $dst -Force | Out-Null
 foreach ($f in $files) {
-    $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/')
-    $target = Join-Path $dst $rel
+    $target = Join-Path $dst (Get-RelPath $f)
     New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
     Copy-Item -LiteralPath $f.FullName -Destination $target
 }
-Copy-Item -LiteralPath $manifest -Destination (Join-Path $dst 'manifest.sha256')
+Set-Content -LiteralPath (Join-Path $dst 'manifest.sha256') -Value $lines -Encoding UTF8
+Write-Host ('Manifesto: {0} arquivos de código' -f $lines.Count) -ForegroundColor Green
+
+# config.json padrão (sem dados da máquina de desenvolvimento)
 Set-Content -LiteralPath (Join-Path $dst 'config.json') -Encoding UTF8 -Value @'
 {
-    "SuppressConfirm": false,
-    "ClearLogStart": false,
-    "KeepGridSort": true,
     "CompactConsole": true,
+    "ConsoleHeight": 0,
+    "CrispText": false,
     "ForceChangeOnLogon": false,
-    "CrispText": false
+    "WindowMaximized": false
 }
 '@
 

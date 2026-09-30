@@ -14,15 +14,13 @@ $global:Theme = @{
     StatusHeight = 28
     CardWidth    = 360
     CardGap      = 14
-    Radius       = 12
 }
 
 # --- Estado global da aplicação ------------------------------------------
 if (-not $global:TI) {
     $global:TI = @{}
 }
-$global:TI.Version    = '1.3.0'
-$global:TI.Root       = $global:TIRoot
+$global:TI.Version    = '1.4.0'
 $global:TI.Elevated   = $false
 $global:TI.Busy       = $false
 $global:TI.ActiveId   = $null
@@ -39,34 +37,35 @@ if ($global:TIPortable) {
 }
 
 # --- Tipografia ---
+# Fontes compartilhadas (cache): ninguém descarta fonte de controle, então
+# reaproveitar evita criar centenas de objetos GDI+ iguais. O .NET não falha
+# com família inexistente (troca por Microsoft Sans Serif): confere o nome.
+$global:TIFontCache = @{}
 function New-TIFont {
     param([float]$Size = 9.5, [string]$Style = 'Regular', [string]$Family = 'Segoe UI')
+    $key = '{0}|{1}|{2}' -f $Size, $Style, $Family
+    if ($global:TIFontCache.ContainsKey($key)) { return $global:TIFontCache[$key] }
     $st = [System.Drawing.FontStyle]::$Style
     $fall = switch ($Family) {
-        'Segoe MDL2 Assets' { @('Segoe MDL2 Assets', 'Segoe UI Symbol', 'Segoe UI', 'Tahoma') }
+        'Segoe MDL2 Assets' { @('Segoe MDL2 Assets', 'Segoe Fluent Icons', 'Segoe UI Symbol') }
         'Consolas'          { @('Consolas', 'Cascadia Mono', 'Courier New', 'Lucida Console') }
-        default             { @($Family, 'Segoe UI', 'Tahoma', 'Microsoft Sans Serif', 'Arial') }
+        default             { @($Family, 'Segoe UI', 'Tahoma', 'Arial') }
     }
+    $font = $null
     foreach ($fam in $fall) {
-        try { return New-Object System.Drawing.Font($fam, $Size, $st) } catch { }
+        try {
+            $f = New-Object System.Drawing.Font($fam, $Size, $st)
+            if ($f.Name -eq $fam) { $font = $f; break }
+            $f.Dispose()
+        } catch { }
     }
-    return New-Object System.Drawing.Font([System.Drawing.FontFamily]::GenericSansSerif, $Size, $st)
+    if (-not $font) { $font = New-Object System.Drawing.Font([System.Drawing.FontFamily]::GenericSansSerif, $Size, $st) }
+    $global:TIFontCache[$key] = $font
+    return $font
 }
 
 $global:Font = @{
-    Display = New-TIFont 15 Bold
-    Title   = New-TIFont 13 Bold
-    Sub     = New-TIFont 10.5 Bold
-    Body    = New-TIFont 9.5
-    BodyB   = New-TIFont 9.5 Bold
-    Small   = New-TIFont 8.5
-    SmallB  = New-TIFont 8.5 Bold
-    Tiny    = New-TIFont 7.5
-    Mono    = New-TIFont 9 Regular 'Consolas'
-    MonoB   = New-TIFont 9 Bold 'Consolas'
-    GlyphSm = New-TIFont 12 Regular 'Segoe MDL2 Assets'
-    GlyphMd = New-TIFont 15 Regular 'Segoe MDL2 Assets'
-    GlyphLg = New-TIFont 18 Regular 'Segoe MDL2 Assets'
+    Small = New-TIFont 8.5
 }
 
 # --- Iconografia (Segoe MDL2 Assets; códigos conferidos na lista oficial) ---
@@ -210,9 +209,7 @@ function New-TILabel {
         [switch]$Bold,
         [switch]$Muted,
         [switch]$Dim,
-        $Color = $null,
-        [switch]$AutoSize,
-        [switch]$NoAutoSize
+        $Color = $null
     )
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = $Text
@@ -222,7 +219,7 @@ function New-TILabel {
                      elseif ($Dim) { $global:Pal.TextDim }
                      else { $global:Pal.TextMain }
     $lbl.BackColor = [System.Drawing.Color]::Transparent
-    $lbl.AutoSize = -not $NoAutoSize.IsPresent
+    $lbl.AutoSize = $true
     $lbl.UseMnemonic = $false
     $lbl.Margin = New-Object System.Windows.Forms.Padding(0)
     return $lbl
@@ -247,24 +244,35 @@ function New-TIButton {
     $btn.Height = $Height
     $btn.AccessibleName = $Text
     $btn.Margin = New-Object System.Windows.Forms.Padding(0, 0, 10, 8)
-    if ($Tip) { $global:TITip.SetToolTip($btn, $Tip) }
+    # Nunca corta o próprio texto: cresce até caber (a largura pedida é o mínimo)
+    try {
+        $need = $btn.GetPreferredSize([System.Drawing.Size]::Empty).Width
+        if ($need -gt $btn.Width) { $btn.Width = $need }
+    } catch { }
+    if ($Tip) {
+        $global:TITip.SetToolTip($btn, $Tip)
+        try { $btn.AutoTip = $false } catch { }
+    }
+    $btn.Add_Disposed({ try { $global:TITip.SetToolTip($this, $null) } catch { } })
     return $btn
 }
 
 function New-TIGlyphButton {
-    param([string]$Icon, [string]$Tip, [int]$Size = 36, $Color = $null, [string]$Style = 'Ghost')
+    param([string]$Icon, [string]$Tip, [int]$Size = 36)
     $btn = New-Object TISuite.PremiumButton
-    $btn.Style = $Style
+    $btn.Style = 'Ghost'
     $btn.Glyph = Get-TIGlyph $Icon
     $btn.GlyphSize = 13
     $btn.Width = $Size
     $btn.Height = $Size
     $btn.Radius = 8
     $btn.AccessibleName = $Tip
-    $btn.Tag = $Tip
-    if ($Color) { $btn.ForeColor = $Color }
     $btn.Margin = New-Object System.Windows.Forms.Padding(0, 0, 6, 0)
-    if ($Tip) { $global:TITip.SetToolTip($btn, $Tip) }
+    if ($Tip) {
+        $global:TITip.SetToolTip($btn, $Tip)
+        try { $btn.AutoTip = $false } catch { }
+    }
+    $btn.Add_Disposed({ try { $global:TITip.SetToolTip($this, $null) } catch { } })
     return $btn
 }
 
@@ -273,6 +281,9 @@ function New-TICard {
     <#
       Cria um card arredondado com cabeçalho (ícone + título + descrição curta de
       uma linha) e devolve o painel de conteúdo (FlowLayoutPanel vertical).
+      -Height é a altura mínima: o card cresce para caber o conteúdo.
+      -Stretch ocupa a largura toda da área; -Half ocupa meia largura (uma
+      coluna só quando a janela é estreita).
       -WithStatus adiciona um selo de estado no canto (Set-TICardStatus).
     #>
     param(
@@ -282,8 +293,8 @@ function New-TICard {
         [string]$Icon = '',
         [int]$Width = 360,
         [int]$Height = 220,
-        [switch]$NoHeader,
         [switch]$Stretch,
+        [switch]$Half,
         [switch]$WithStatus
     )
     $card = New-Object TISuite.RoundPanel
@@ -295,56 +306,54 @@ function New-TICard {
     $card.Size = New-Object System.Drawing.Size($Width, $Height)
     $card.Margin = New-Object System.Windows.Forms.Padding(0, 0, $global:Theme.CardGap, $global:Theme.CardGap)
     if ($Stretch) { $card.Tag = 'tistretch' }
+    elseif ($Half) { $card.Tag = 'tihalf' }
 
     $pill = $null
-    $topY = 12
-    if (-not $NoHeader) {
-        $tx = 18
-        if ($Icon) {
-            $g = New-TIGlyph -Icon $Icon -Size 15 -Color $global:Pal.Primary
-            $g.Location = New-Object System.Drawing.Point(18, 17)
-            $card.Controls.Add($g)
-            $tx = 46
-        }
-        $reserve = 18
-        if ($WithStatus) {
-            $pill = New-Object TISuite.StatusPill
-            $pill.Anchor = 'Top,Right'
-            $pill.Location = New-Object System.Drawing.Point(($Width - 18 - 60), 15)
-            $card.Controls.Add($pill)
-            $pill.Text = 'Aguardando'
-            $pill.Tone = $global:Pal.TextDim
-            $reserve = 132
-        }
-        if ($Title) {
-            $t = New-TILabel -Text $Title -Size 10.5 -Bold
-            $t.AutoSize = $false
-            $t.AutoEllipsis = $true
-            $t.Size = New-Object System.Drawing.Size(([Math]::Max(60, $Width - $tx - $reserve)), 22)
-            $t.Location = New-Object System.Drawing.Point($tx, 14)
-            $t.Anchor = 'Top,Left,Right'
-            $card.Controls.Add($t)
-        }
-        if ($Desc) {
-            $d = New-TILabel -Text $Desc -Size 8 -Muted
-            $d.AutoSize = $false
-            $d.AutoEllipsis = $true
-            $d.Size = New-Object System.Drawing.Size(([Math]::Max(60, $Width - $tx - 18)), 16)
-            $d.Location = New-Object System.Drawing.Point($tx, 37)
-            $d.Anchor = 'Top,Left,Right'
-            $card.Controls.Add($d)
-            $topY = 64
-        } else {
-            $topY = 52
-        }
-        # Divisória ancorada dos dois lados: acompanha cards esticados
-        $div = New-Object System.Windows.Forms.Panel
-        $div.BackColor = $global:Pal.BorderSoft
-        $div.Location = New-Object System.Drawing.Point(18, ($topY - 7))
-        $div.Size = New-Object System.Drawing.Size(($Width - 36), 1)
-        $div.Anchor = 'Top,Left,Right'
-        $card.Controls.Add($div)
+    $tx = 18
+    if ($Icon) {
+        $g = New-TIGlyph -Icon $Icon -Size 15 -Color $global:Pal.Primary
+        $g.Location = New-Object System.Drawing.Point(18, 17)
+        $card.Controls.Add($g)
+        $tx = 46
     }
+    $reserve = 18
+    if ($WithStatus) {
+        $pill = New-Object TISuite.StatusPill
+        $pill.Anchor = 'Top,Right'
+        $pill.Location = New-Object System.Drawing.Point(($Width - 18 - 60), 15)
+        $card.Controls.Add($pill)
+        $pill.Text = 'Aguardando'
+        $pill.Tone = $global:Pal.TextDim
+        $reserve = 132
+    }
+    if ($Title) {
+        $t = New-TILabel -Text $Title -Size 10.5 -Bold
+        $t.AutoSize = $false
+        $t.AutoEllipsis = $true
+        $t.Size = New-Object System.Drawing.Size(([Math]::Max(60, $Width - $tx - $reserve)), 22)
+        $t.Location = New-Object System.Drawing.Point($tx, 14)
+        $t.Anchor = 'Top,Left,Right'
+        $card.Controls.Add($t)
+    }
+    if ($Desc) {
+        $d = New-TILabel -Text $Desc -Size 8 -Muted
+        $d.AutoSize = $false
+        $d.AutoEllipsis = $true
+        $d.Size = New-Object System.Drawing.Size(([Math]::Max(60, $Width - $tx - 18)), 16)
+        $d.Location = New-Object System.Drawing.Point($tx, 37)
+        $d.Anchor = 'Top,Left,Right'
+        $card.Controls.Add($d)
+        $topY = 64
+    } else {
+        $topY = 52
+    }
+    # Divisória ancorada dos dois lados: acompanha cards esticados
+    $div = New-Object System.Windows.Forms.Panel
+    $div.BackColor = $global:Pal.BorderSoft
+    $div.Location = New-Object System.Drawing.Point(18, ($topY - 7))
+    $div.Size = New-Object System.Drawing.Size(($Width - 36), 1)
+    $div.Anchor = 'Top,Left,Right'
+    $card.Controls.Add($div)
 
     $body = New-Object TISuite.TIScrollFlow
     $body.FlowDirection = 'TopDown'
@@ -356,15 +365,27 @@ function New-TICard {
     $body.Anchor = 'Top,Bottom,Left,Right'
     $body.Padding = New-Object System.Windows.Forms.Padding(4, 4, 4, 4)
     $body.Tag = $card
+    Add-Member -InputObject $body -NotePropertyName 'MinCardHeight' -NotePropertyValue $Height -Force
     $body.Add_Resize({ Set-TIFitRows $this })
-    # Barra de rolagem nativa é clara (tema do sistema) e quebra o visual escuro.
-    # Esconde a barra mantendo a rolagem ativa (roda do mouse).
-    $body.Add_Layout({ try { $this.VerticalScroll.Visible = $false } catch { } })
+    $body.Add_Layout({ Update-TICardHeight $this })
     $card.Controls.Add($body)
     if ($pill) { Add-Member -InputObject $body -NotePropertyName 'Pill' -NotePropertyValue $pill -Force }
 
     if ($Parent) { $Parent.Controls.Add($card) }
     return $body
+}
+
+# O card cresce (nunca abaixo da altura pedida) para o conteúdo não ficar cortado
+function Update-TICardHeight {
+    param($Body)
+    if (-not $Body -or $Body.IsDisposed -or -not $Body.PSObject.Properties['MinCardHeight']) { return }
+    $card = $Body.Parent
+    if (-not $card) { return }
+    try {
+        $need = $Body.GetPreferredSize((New-Object System.Drawing.Size($Body.ClientSize.Width, 0))).Height
+        $h = [Math]::Max([int]$Body.MinCardHeight, $Body.Top + $need + 12)
+        if ($card.Height -ne $h) { $card.Height = $h }
+    } catch { }
 }
 
 function Set-TICardStatus {
@@ -422,6 +443,13 @@ function New-TIRow {
     $v.Location = New-Object System.Drawing.Point($LabelWidth, 2)
     $v.Size = New-Object System.Drawing.Size(([Math]::Max(40, $Width - $LabelWidth)), 20)
     $v.Anchor = 'Top,Left,Right'
+    # Duplo clique copia o valor (série, MAC, IP... direto para o chamado)
+    $v.Add_DoubleClick({
+        $t = [string]$this.Text
+        if ($t -and $t -ne '-') {
+            try { [System.Windows.Forms.Clipboard]::SetText($t); Show-TIToast -Text ('Copiado: {0}' -f $t) -Type 'Success' } catch { }
+        }
+    })
     $row.Controls.Add($v)
 
     return [pscustomobject]@{ Panel = $row; Value = $v; Label = $l }
@@ -521,6 +549,12 @@ function Set-TIFitRows {
                 $cw = $w - $c.Margin.Horizontal
                 if ($cw -gt 80 -and $c.Width -ne $cw) { $c.Width = $cw }
             }
+            'tihalf' {
+                # duas colunas quando cada uma tem pelo menos 400 px; senão, largura toda
+                $cols = if ((($w / 2) - $c.Margin.Horizontal) -ge 400) { 2 } else { 1 }
+                $cw = [int][Math]::Floor($w / $cols) - $c.Margin.Horizontal
+                if ($cw -gt 80 -and $c.Width -ne $cw) { $c.Width = $cw }
+            }
             'tirow' {
                 if ($c.Width -ne $w) { $c.Width = $w }
             }
@@ -547,9 +581,9 @@ function New-TIWorkspaceLayout {
     $flow.WrapContents = $true
     $flow.AutoScroll = $true
     $flow.BackColor = $global:Pal.Bg
-    $flow.Padding = New-Object System.Windows.Forms.Padding(24, 20, 24, 24)
+    # direita menor: os cards já têm a margem do espaçamento (CardGap) à direita
+    $flow.Padding = New-Object System.Windows.Forms.Padding(24, 20, (24 - $global:Theme.CardGap), 24)
     $flow.Add_Resize({ Set-TIFitRows $this })
-    $flow.Add_Layout({ try { $this.VerticalScroll.Visible = $false } catch { } })
     $Panel.Controls.Add($flow)
     return $flow
 }
@@ -592,6 +626,12 @@ function New-TIGrid {
     $g.RowTemplate.Height = 30
     $g.Font = New-TIFont 9.5
     $g.ForeColor = $global:Pal.TextMain
+    $g.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 6)
+    # Buffer duplo (propriedade protegida): rolagem sem cintilação em PC fraco
+    try {
+        [System.Windows.Forms.DataGridView].GetProperty('DoubleBuffered',
+            [System.Reflection.BindingFlags]'Instance, NonPublic').SetValue($g, $true, $null)
+    } catch { }
 
     $hdr = $g.ColumnHeadersDefaultCellStyle
     $hdr.BackColor = $global:Pal.CardAlt
@@ -616,12 +656,15 @@ function New-TIGrid {
     $alt.SelectionBackColor = $global:Pal.ActiveRow
     $alt.SelectionForeColor = $global:Pal.TextMain
 
+    # Colunas proporcionais à largura do card (a largura pedida vira o peso):
+    # nada fica fora de alcance em tela pequena, nem sobra faixa vazia em tela grande.
     for ($i = 0; $i -lt $Headers.Count; $i++) {
         $col = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
         $col.HeaderText = $Headers[$i]
-        $col.Width = if ($Widths -and $i -lt $Widths.Count) { $Widths[$i] } else { 120 }
-        # última coluna preenche o espaço restante (sem faixa vazia à direita)
-        if ($i -eq ($Headers.Count - 1)) { $col.MinimumWidth = [Math]::Min(80, $col.Width); $col.AutoSizeMode = 'Fill' }
+        $cw = if ($Widths -and $i -lt $Widths.Count) { $Widths[$i] } else { 120 }
+        $col.MinimumWidth = [Math]::Min(60, $cw)
+        $col.FillWeight = $cw
+        $col.AutoSizeMode = 'Fill'
         [void]$g.Columns.Add($col)
     }
 
@@ -645,13 +688,114 @@ function New-TIGrid {
     $g.Add_RowsAdded($place)
     $g.Add_RowsRemoved($place)
     $g.Add_Resize($place)
-    $empty.Add_TextChanged($place)
+    # SizeChanged (não TextChanged): o AutoSize só recalcula a largura depois do texto
+    $empty.Add_SizeChanged($place)
     $g.Add_HandleCreated({ Set-TIDarkScroll $this })
+    # Ordenação pelo valor real (bytes, datas, ms) quando Add-TIRow recebe -SortKeys;
+    # sem chave, ordena pelo texto como antes
+    $g.Add_SortCompare({
+        param($s, $e)
+        try {
+            $a = $s.Rows[$e.RowIndex1].Cells[$e.Column.Index].Tag
+            $b = $s.Rows[$e.RowIndex2].Cells[$e.Column.Index].Tag
+            if ($null -ne $a -and $null -ne $b) {
+                $e.SortResult = [System.Collections.Comparer]::Default.Compare($a, $b)
+                $e.Handled = $true
+            }
+        } catch { }
+    })
     & $place
     Add-Member -InputObject $g -NotePropertyName 'EmptyLabel' -NotePropertyValue $empty -Force
+    Add-TIGridMenu $g
 
     if ($Parent) { $Parent.Controls.Add($g) }
     return $g
+}
+
+# Botão direito nas tabelas: copiar linhas e exportar a lista para o Excel
+function Add-TIGridMenu {
+    param($Grid)
+    $menu = New-Object System.Windows.Forms.ContextMenuStrip
+    $menu.ShowImageMargin = $false
+    $menu.Renderer = New-Object TISuite.DarkMenuRenderer
+    $menu.BackColor = $global:Pal.CardAlt
+    $menu.ForeColor = $global:Pal.TextMain
+    $menu.Font = New-TIFont 9
+    $miCopy = New-Object System.Windows.Forms.ToolStripMenuItem('Copiar linha(s) selecionada(s)')
+    $miCopy.Add_Click({ Copy-TIGridRows -Grid $Grid }.GetNewClosure())
+    $miAll = New-Object System.Windows.Forms.ToolStripMenuItem('Copiar a lista inteira')
+    $miAll.Add_Click({ Copy-TIGridRows -Grid $Grid -All }.GetNewClosure())
+    $miCsv = New-Object System.Windows.Forms.ToolStripMenuItem('Exportar a lista (.csv para o Excel)...')
+    $miCsv.Add_Click({ Export-TIGridCsv -Grid $Grid }.GetNewClosure())
+    foreach ($mi in @($miCopy, $miAll, $miCsv)) { $mi.ForeColor = $global:Pal.TextMain; [void]$menu.Items.Add($mi) }
+    $menu.Add_Opening({
+        $miCopy.Enabled = ($Grid.SelectedRows.Count -gt 0)
+        $miAll.Enabled = ($Grid.Rows.Count -gt 0)
+        $miCsv.Enabled = ($Grid.Rows.Count -gt 0)
+    }.GetNewClosure())
+    # Clique direito numa linha não selecionada passa a selecioná-la (como no Explorer)
+    $Grid.Add_CellMouseDown({
+        param($s, $e)
+        if ($e.Button -ne 'Right' -or $e.RowIndex -lt 0) { return }
+        $row = $s.Rows[$e.RowIndex]
+        if (-not $row.Selected) { $s.ClearSelection(); $row.Selected = $true }
+    })
+    $Grid.ContextMenuStrip = $menu
+}
+
+# Texto de uma linha: células separadas por tabulação (cola certo no Excel)
+function Get-TIGridLines {
+    param($Grid, $Rows)
+    $cols = @($Grid.Columns | Where-Object { $_.Visible -and $_.HeaderText } | Sort-Object DisplayIndex)
+    $out = New-Object System.Collections.ArrayList
+    [void]$out.Add((@($cols | ForEach-Object { $_.HeaderText }) -join "`t"))
+    foreach ($r in $Rows) {
+        [void]$out.Add((@($cols | ForEach-Object { [string]$r.Cells[$_.Index].FormattedValue }) -join "`t"))
+    }
+    return $out
+}
+
+function Copy-TIGridRows {
+    param($Grid, [switch]$All)
+    $rows = if ($All) { @($Grid.Rows) } else { @($Grid.SelectedRows | Sort-Object Index) }
+    if ($rows.Count -eq 0) { return }
+    try {
+        [System.Windows.Forms.Clipboard]::SetText(((Get-TIGridLines -Grid $Grid -Rows $rows) -join "`r`n"))
+        Show-TIToast -Text ('{0} linha(s) copiada(s).' -f $rows.Count) -Type 'Success'
+    } catch {
+        Show-TIToast -Text 'Não foi possível usar a área de transferência.' -Type 'Error'
+    }
+}
+
+function Export-TIGridCsv {
+    param($Grid)
+    $rows = @($Grid.Rows)
+    if ($rows.Count -eq 0) { return }
+    $dlg = New-Object System.Windows.Forms.SaveFileDialog
+    $dlg.Filter = 'Planilha CSV (*.csv)|*.csv'
+    $dlg.FileName = ('{0}-{1}.csv' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmm'))
+    try {
+        if ($dlg.ShowDialog($global:Form) -ne 'OK') { return }
+        $cols = @($Grid.Columns | Where-Object { $_.Visible -and $_.HeaderText } | Sort-Object DisplayIndex)
+        $lines = New-Object System.Collections.ArrayList
+        $fmt = { param($v) '"' + ([string]$v).Replace('"', '""') + '"' }
+        [void]$lines.Add((@($cols | ForEach-Object { & $fmt $_.HeaderText }) -join ';'))
+        foreach ($r in $rows) {
+            [void]$lines.Add((@($cols | ForEach-Object {
+                $v = [string]$r.Cells[$_.Index].FormattedValue
+                # texto que começa com = + - @ vira fórmula no Excel: neutraliza
+                if ($v -match '^[=+\-@]') { $v = "'" + $v }
+                & $fmt $v
+            }) -join ';'))
+        }
+        # ; e UTF-8 com BOM: abre certo no Excel em português
+        [System.IO.File]::WriteAllText($dlg.FileName, (($lines -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
+        Show-TIToast -Text ('Lista exportada: {0}' -f (Split-Path -Leaf $dlg.FileName)) -Type 'Success'
+    } catch {
+        Show-TIToast -Text ('Não foi possível exportar: {0}' -f $_.Exception.Message) -Type 'Error'
+    } finally {
+        $dlg.Dispose()
+    }
 }
 
 function Set-TIGridEmptyText {
@@ -659,12 +803,14 @@ function Set-TIGridEmptyText {
     if ($Grid -and $Grid.PSObject.Properties['EmptyLabel']) { $Grid.EmptyLabel.Text = $Text }
 }
 
+# -SortKeys: valor bruto por coluna (tamanho em bytes, data...) usado ao ordenar
 function Add-TIRow {
-    param($Grid, [object[]]$Cells, [object]$Tag = $null)
+    param($Grid, [object[]]$Cells, [object]$Tag = $null, [object[]]$SortKeys = $null)
     $row = New-Object System.Windows.Forms.DataGridViewRow
-    foreach ($c in $Cells) {
+    for ($i = 0; $i -lt $Cells.Count; $i++) {
         $cell = New-Object System.Windows.Forms.DataGridViewTextBoxCell
-        $cell.Value = $c
+        $cell.Value = $Cells[$i]
+        if ($SortKeys -and $i -lt $SortKeys.Count -and $null -ne $SortKeys[$i]) { $cell.Tag = $SortKeys[$i] }
         [void]$row.Cells.Add($cell)
     }
     if ($null -ne $Tag) { $row.Tag = $Tag }
@@ -672,10 +818,18 @@ function Add-TIRow {
     return $row
 }
 
-# Depois de preencher: nada pré-selecionado (botões só liberam com clique do operador)
+# Depois de preencher: mantém a ordenação que o operador escolheu (a seta do
+# cabeçalho continuava, mas as linhas voltavam na ordem original) e deixa
+# nada pré-selecionado (botões só liberam com clique do operador)
 function Clear-TIGridSelection {
     param($Grid)
     if (-not $Grid) { return }
+    try {
+        if ($Grid.SortedColumn -and $Grid.Rows.Count -gt 1) {
+            $dir = if ($Grid.SortOrder -eq 'Descending') { 'Descending' } else { 'Ascending' }
+            $Grid.Sort($Grid.SortedColumn, [System.ComponentModel.ListSortDirection]$dir)
+        }
+    } catch { }
     try { $Grid.ClearSelection() } catch { }
     try { $Grid.CurrentCell = $null } catch { }
 }
@@ -705,8 +859,10 @@ function Add-TIPlaceholder {
         $holder.Visible = ($TextBox.Text.Length -eq 0 -and -not $TextBox.Focused)
     }.GetNewClosure()
     $TextBox.Add_TextChanged($sync)
-    $TextBox.Add_Enter($sync)
-    $TextBox.Add_Leave($sync)
+    # GotFocus/LostFocus (não Enter/Leave): no Enter o foco nativo ainda não chegou
+    # e o texto de exemplo ficava por cima do cursor ao entrar com Tab
+    $TextBox.Add_GotFocus($sync)
+    $TextBox.Add_LostFocus($sync)
     & $sync
     return $holder
 }
@@ -721,12 +877,15 @@ function Format-TIBytes {
     return ('{0} B' -f $Bytes)
 }
 
+# -Relative acrescenta a idade: '05/01/2026 10:30 (há 268 dias)'. -Empty: texto quando não há data.
 function Format-TIDate {
-    param($Dt)
-    if (-not $Dt) { return '-' }
+    param($Dt, [switch]$Relative, [string]$Empty = '-')
+    if (-not $Dt) { return $Empty }
     if ($Dt -is [string]) { return $Dt }
-    if ($Dt -eq [datetime]::MinValue) { return '-' }
-    return $Dt.ToString('dd/MM/yyyy HH:mm')
+    if ($Dt -eq [datetime]::MinValue) { return $Empty }
+    $txt = $Dt.ToString('dd/MM/yyyy HH:mm')
+    if ($Relative) { $txt += ' (' + (Format-TIAgo $Dt) + ')' }
+    return $txt
 }
 
 function Format-TIDuration {
@@ -750,20 +909,14 @@ function Format-TIAgo {
 }
 
 # --- Persistência de configurações ---------------------------------------------
-if (-not $global:TI.SettingsPath) {
-    if ($global:TIPortable) {
-        $global:TI.SettingsPath = Join-Path $global:TIRoot 'config.json'
-    } else {
-        $global:TI.SettingsPath = Join-Path $env:LOCALAPPDATA 'TI-Suite\config.json'
-    }
-}
 $global:TI.Settings = @{
-    SuppressConfirm    = $false
-    ClearLogStart      = $false
-    KeepGridSort       = $true
     CompactConsole     = $true
     ForceChangeOnLogon = $false
     CrispText          = $false
+    # Lembrados ao fechar a janela (05-Shell): maximizada e altura do console
+    # em pixels (0 = automática, 30% da área)
+    WindowMaximized    = $false
+    ConsoleHeight      = 0
     # SchoolPassword vive SOMENTE em memória (nunca vai para o config.json)
     SchoolPassword     = ''
 }
@@ -772,8 +925,17 @@ function Read-TISettings {
     try {
         if (Test-Path -LiteralPath $global:TI.SettingsPath) {
             $j = Get-Content -LiteralPath $global:TI.SettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            foreach ($k in @('SuppressConfirm','ClearLogStart','KeepGridSort','CompactConsole','ForceChangeOnLogon','CrispText')) {
-                if ($null -ne $j.$k) { $global:TI.Settings[$k] = [bool]$j.$k }
+            foreach ($k in @('CompactConsole','ForceChangeOnLogon','CrispText','WindowMaximized')) {
+                $v = $j.$k
+                if ($null -eq $v) { continue }
+                # "false" entre aspas (editado à mão) não pode virar verdadeiro
+                if ($v -is [string]) { $v = ($v -match '^(?i:true|1|sim)$') }
+                $global:TI.Settings[$k] = [bool]$v
+            }
+            # Número inteiro de 0 a 4000; valor estranho (editado à mão) é ignorado
+            $n = 0
+            if ($null -ne $j.ConsoleHeight -and [int]::TryParse(([string]$j.ConsoleHeight).Trim(), [ref]$n) -and $n -ge 0 -and $n -le 4000) {
+                $global:TI.Settings['ConsoleHeight'] = $n
             }
             # Migração: config antigo guardava a senha em texto puro. Não carrega e apaga do disco.
             if ($null -ne $j.SchoolPassword -and [string]$j.SchoolPassword -ne '') { $script:TILegacyPwScrub = $true }
@@ -781,15 +943,24 @@ function Read-TISettings {
     } catch { }
 }
 
+# Devolve $false quando não consegue gravar (pendrive protegido, arquivo somente leitura)
 function Save-TISettings {
     try {
         $dir = Split-Path -Parent $global:TI.SettingsPath
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        $persist = @{}
-        foreach ($k in $global:TI.Settings.Keys) { if ($k -ne 'SchoolPassword') { $persist[$k] = $global:TI.Settings[$k] } }
-        ConvertTo-Json -InputObject $persist | Set-Content -LiteralPath $global:TI.SettingsPath -Encoding UTF8
-    } catch { }
+        # Nunca grava a senha nem opções que saíram do app (config.json antigo fica limpo)
+        $skip = @('SchoolPassword', 'SuppressConfirm', 'ClearLogStart', 'KeepGridSort')
+        $persist = [ordered]@{}
+        foreach ($k in @($global:TI.Settings.Keys | Sort-Object)) { if ($skip -notcontains $k) { $persist[$k] = $global:TI.Settings[$k] } }
+        ConvertTo-Json -InputObject $persist | Set-Content -LiteralPath $global:TI.SettingsPath -Encoding UTF8 -ErrorAction Stop
+        return $true
+    } catch {
+        $msg = 'Não foi possível gravar o config.json (pendrive protegido contra gravação?). As preferências valem só nesta sessão.'
+        if (Get-Command Write-TILog -ErrorAction SilentlyContinue) { Write-TILog -Level 'Warn' -Message $msg }
+        if ($global:Form -and (Get-Command Show-TIToast -ErrorAction SilentlyContinue)) { Show-TIToast -Text $msg -Type 'Warn' }
+        return $false
+    }
 }
 
 Read-TISettings
-if ($script:TILegacyPwScrub) { Save-TISettings }
+if ($script:TILegacyPwScrub) { [void](Save-TISettings) }

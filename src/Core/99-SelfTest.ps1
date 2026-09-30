@@ -26,6 +26,16 @@ function Invoke-TISelfTest {
         return -not $global:TI.Busy
     }
 
+    # Deixa a janela processar eventos por um tempo (sem bloquear)
+    function Invoke-TIUiWait {
+        param([int]$Milliseconds = 300)
+        $deadline = (Get-Date).AddMilliseconds($Milliseconds)
+        while ((Get-Date) -lt $deadline) {
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 30
+        }
+    }
+
     Write-Host ''
     Write-Host '==== TI Suite - autoverificação ====' -ForegroundColor Cyan
     Write-Host ''
@@ -47,10 +57,14 @@ function Invoke-TISelfTest {
     # 2. Controles C#
     $typesOk = $true
     foreach ($t in @('TISuite.PremiumButton','TISuite.RoundPanel','TISuite.SidebarItem','TISuite.FlatProgress',
-                     'TISuite.ArcSpinner','TISuite.ToggleSwitch','TISuite.StatusPill','TISuite.TIScrollFlow','TISuite.Native')) {
+                     'TISuite.ArcSpinner','TISuite.ToggleSwitch','TISuite.StatusPill','TISuite.TIScrollFlow',
+                     'TISuite.TIForm','TISuite.Native')) {
         if (-not ($t -as [type])) { $typesOk = $false; Write-Host "    tipo ausente: $t" -ForegroundColor Red }
     }
-    Add-Check 'Controles visuais carregados' $typesOk ("origem: {0}" -f $global:TIControlsSource)
+    # "compilados na hora", "DLL pré-compilada"... e o motivo, quando a DLL não foi usada
+    $ctlDetail = [string]$global:TIControlsSource
+    if ($global:TIControlsError) { $ctlDetail += ('; motivo: {0}' -f $global:TIControlsError) }
+    Add-Check 'Controles visuais carregados' $typesOk $ctlDetail
     Add-Check 'Botão aceita Enter (PerformClick)' ($null -ne ([TISuite.PremiumButton].GetMethod('PerformClick')))
 
     # 3. Fontes de ícones e interface
@@ -89,19 +103,64 @@ function Invoke-TISelfTest {
     }
     $global:TI.SuppressOnActivate = $false
 
-    # 8. Exibição breve da janela (layout, DWM, redimensionamento)
+    # 8. Exibição breve da janela (layout, DWM, maximizar/restaurar, redimensionamento)
     try {
         $global:Form.Show()
-        $deadline = (Get-Date).AddSeconds(2)
-        while ((Get-Date) -lt $deadline) {
-            [System.Windows.Forms.Application]::DoEvents()
-            Start-Sleep -Milliseconds 30
-        }
+        Invoke-TIUiWait 2000
+        $wa = [System.Windows.Forms.Screen]::FromControl($global:Form).WorkingArea
+
+        $global:Form.WindowState = 'Maximized'
+        Invoke-TIUiWait 400
+        $b = $global:Form.Bounds
+        $okMax = ($global:BtnMax.Glyph -eq (Get-TIGlyph 'Restore')) -and ($null -eq $global:Form.Region) -and
+                 ($global:Form.Padding.All -eq 0) -and ($b.Width -le $wa.Width) -and ($b.Height -le $wa.Height)
+        Add-Check 'Maximizar dentro da área útil (sem cobrir a barra de tarefas)' $okMax ('{0}x{1} de {2}x{3}' -f $b.Width, $b.Height, $wa.Width, $wa.Height)
+
+        $global:Form.WindowState = 'Normal'
+        Invoke-TIUiWait 400
+        $b = $global:Form.Bounds
+        $okNorm = ($global:BtnMax.Glyph -eq (Get-TIGlyph 'Max')) -and ($global:Form.Padding.All -eq $global:Form.ResizeBorder) -and
+                  ($b.Width -le $wa.Width) -and ($b.Height -le $wa.Height)
+        Add-Check 'Restaurar: cabe na área útil e tem borda para redimensionar' $okNorm ('{0}x{1}' -f $b.Width, $b.Height)
+
         $global:Form.Width = 1280
         [System.Windows.Forms.Application]::DoEvents()
         Add-Check 'Exibição e redimensionamento da janela' ($global:Form.Width -eq 1280 -and $global:NavFlow.Width -gt 100)
     } catch {
         Add-Check 'Exibição e redimensionamento da janela' $false $_.ToString()
+    }
+
+    # 8b. Atalhos (teclas simuladas na própria janela) e ajuda F1 (montada, sem abrir)
+    try {
+        $onKey = [System.Windows.Forms.Control].GetMethod('OnKeyDown', [System.Reflection.BindingFlags]'Instance,NonPublic')
+        $sendKey = {
+            param([int]$Keys)
+            $ev = New-Object System.Windows.Forms.KeyEventArgs([System.Windows.Forms.Keys]$Keys)
+            [void]$onKey.Invoke($global:Form, [object[]]@(, $ev))
+        }
+        $wsIds = @($global:TI.Workspaces | ForEach-Object { $_.Id })
+        $global:TI.SuppressOnActivate = $true
+        Switch-TIWorkspace -Id $wsIds[0]
+        & $sendKey ([int][System.Windows.Forms.Keys]::Control -bor [int][System.Windows.Forms.Keys]::D2)
+        $okCtrl2 = ($global:TI.ActiveId -eq $wsIds[1])
+        Switch-TIWorkspace -Id $wsIds[0]
+        $global:TI.SuppressOnActivate = $false
+        Add-Check 'Atalho Ctrl+2 troca de área' $okCtrl2
+
+        $c0 = $global:ConsoleCollapsed
+        & $sendKey ([int][System.Windows.Forms.Keys]::F12)
+        $c1 = $global:ConsoleCollapsed
+        & $sendKey ([int][System.Windows.Forms.Keys]::F12)
+        Add-Check 'F12 mostra e oculta o console' (($c1 -ne $c0) -and ($global:ConsoleCollapsed -eq $c0))
+
+        $sf = New-TIShortcutsForm
+        $okHelp = ($sf.Controls.Count -ge 18)
+        $sf.Dispose()
+        Add-Check 'Ajuda de atalhos (F1)' $okHelp
+    } catch {
+        Add-Check 'Atalhos do teclado' $false $_.ToString()
+    } finally {
+        $global:TI.SuppressOnActivate = $false
     }
 
     # 9. Interruptor: vai e volta (bug do 2o clique corrigido na 1.3.0)
@@ -143,10 +202,12 @@ function Invoke-TISelfTest {
     Add-Check 'Início da tarefa assíncrona' $okAsync
     if ($okAsync) {
         $overlaySeen = $false
+        $detailSeen = $false
         $deadline = (Get-Date).AddSeconds(15)
         while (-not $global:SelfTestAsync.Done -and (Get-Date) -lt $deadline) {
             [System.Windows.Forms.Application]::DoEvents()
             if ($global:Overlay.Visible) { $overlaySeen = $true }
+            if ($global:OverlayHint.Text -like 'Etapa*' -and $global:OverlayLabel.Text -like '*%)') { $detailSeen = $true }
             Start-Sleep -Milliseconds 30
         }
         $idle = Wait-TIIdle -Seconds 5
@@ -154,8 +215,36 @@ function Invoke-TISelfTest {
         Add-Check 'Resultado capturado da tarefa' ($global:SelfTestAsync.Result -and $global:SelfTestAsync.Result.Value -eq 42)
         Add-Check 'Estado liberado após a tarefa' $idle
         Add-Check 'Aviso de ocupado exibido' $overlaySeen
+        Add-Check 'Aviso de ocupado mostra a última mensagem e o percentual' $detailSeen
     } else {
         Add-Check 'Conclusão da tarefa assíncrona' $false 'não iniciada'
+    }
+
+    # 11b. Falha relatada pela tarefa (Emit ... 'Error') conta como erro dela
+    [void](Wait-TIIdle -Seconds 30)
+    $okFail = Invoke-TIAsync -Name 'Autoteste de falha' -Quiet -Script { Emit 'Falha simulada do autoteste' 'Error' } -OnComplete { }
+    if ($okFail) { [void](Wait-TIIdle -Seconds 15) }
+    $failHit = @($global:LogEntries | Where-Object { $_.Text -eq 'Autoteste de falha: terminou com 1 erro(s).' }).Count -gt 0
+    Add-Check "Emit 'Error' conta como erro da tarefa" ($okFail -and $failHit)
+
+    # 11c. Fechar com tarefa em andamento: interrompe sem travar e libera o estado
+    [void](Wait-TIIdle -Seconds 30)
+    $global:SelfTestCloseDone = $false
+    $okBusy = Invoke-TIAsync -Name 'Autoteste: fechar com tarefa' -Quiet -Script {
+        for ($i = 0; $i -lt 300; $i++) { Start-Sleep -Milliseconds 100 }
+    } -OnComplete { $global:SelfTestCloseDone = $true }
+    if ($okBusy) {
+        Invoke-TIUiWait 500
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        # Windows desligando: fecha sem perguntar (nenhum diálogo modal no autoteste)
+        $allowed = Test-TICanClose -Reason ([System.Windows.Forms.CloseReason]::WindowsShutDown)
+        $sw.Stop()
+        Invoke-TIUiWait 300
+        $okClose = ($allowed -and -not $global:TI.Busy -and -not $global:Overlay.Visible -and
+                    -not $global:SelfTestCloseDone -and $sw.Elapsed.TotalSeconds -lt 8)
+        Add-Check 'Fechar com tarefa: interrompe sem travar' $okClose ('{0:N1} s' -f $sw.Elapsed.TotalSeconds)
+    } else {
+        Add-Check 'Fechar com tarefa: interrompe sem travar' $false 'tarefa não iniciada'
     }
 
     # 12. Proteção de elevação
@@ -178,7 +267,9 @@ function Invoke-TISelfTest {
                 Wifi    = ((@($wifi | Where-Object { $_.Label -eq 'Padrão' }) | Select-Object -First 1).Value -eq '802.11ac')
                 Msi     = ($msi.Kind -eq 'msi' -and $msi.Args -like '/X{*} /qn /norestart')
                 Unknown = ($unk.Kind -eq 'interactive' -and -not $unk.Silent)
-                Profile = ((Test-TIStudentProfileName '12345.000') -and (Test-TIStudentProfileName '12345.ESCOLA') -and -not (Test-TIStudentProfileName 'professor'))
+                Profile = ((Get-TIProfileVerdict -Sid 'S-1-5-21-1-2-3-1001' -Path 'C:\Users\Professor' -MachineSid 'S-1-5-21-1-2-3' -AdminSids @{}).Protected -and
+                           (Get-TIProfileVerdict -Sid 'S-1-5-21-7-8-9-1801' -Path 'C:\Users\prof' -MachineSid 'S-1-5-21-1-2-3' -AdminSids @{} -IsAdmin $null).Protected -and
+                           -not (Get-TIProfileVerdict -Sid 'S-1-5-21-7-8-9-1800' -Path 'C:\Users\12345.ESCOLA' -MachineSid 'S-1-5-21-1-2-3' -AdminSids @{}).Protected)
                 Av      = ((Get-TIAvState 397568).Enabled -and -not (Get-TIAvState 393472).Enabled)
                 Clock   = ((Get-TIClockVerdict 30) -eq 'ok' -and (Get-TIClockVerdict 400) -eq 'crit')
                 Battery = ((Get-TIBatteryVerdict 45) -eq 'crit' -and (Get-TIBatteryVerdict 90) -eq 'ok')
@@ -187,7 +278,7 @@ function Invoke-TISelfTest {
         Add-Check 'Leitura do Wi-Fi (português e inglês)' ([bool]$logic.Wifi)
         Add-Check 'Desinstalação MSI silenciosa' ([bool]$logic.Msi)
         Add-Check 'Desinstalador desconhecido abre a janela' ([bool]$logic.Unknown)
-        Add-Check 'Perfis de aluno com sufixo' ([bool]$logic.Profile)
+        Add-Check 'Perfis: contas locais e admins protegidos' ([bool]$logic.Profile)
         Add-Check 'Leitura do estado do antivírus' ([bool]$logic.Av)
         Add-Check 'Regras de relógio e bateria' ([bool]($logic.Clock -and $logic.Battery))
     } catch {
@@ -213,11 +304,16 @@ function Invoke-TISelfTest {
 
     # 15. Persistência de configurações
     try {
-        Save-TISettings
+        [void](Save-TISettings)
         Add-Check 'Gravação das configurações' (Test-Path -LiteralPath $global:TI.SettingsPath)
     } catch {
         Add-Check 'Gravação das configurações' $false $_.ToString()
     }
+    $keys = $global:TI.Settings
+    Add-Check 'Configurações: chaves atuais (janela e console lembrados)' (
+        -not $keys.ContainsKey('SuppressConfirm') -and -not $keys.ContainsKey('ClearLogStart') -and
+        $keys.ContainsKey('WindowMaximized') -and $keys.ContainsKey('ConsoleHeight'))
+    Add-Check 'Usuário conectado ao Windows identificado' ([bool]$global:TI.SessionUser) ('{0} {1}' -f $global:TI.SessionUser, $global:TI.SessionUserSid)
 
     # 16. Folha de ícones (amostra visual para conferência manual)
     try {

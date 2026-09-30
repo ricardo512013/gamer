@@ -8,7 +8,10 @@
 #      src\Core\Controls.cs na hora com o Add-Type (C# 5).
 # =====================================================================
 
-$global:TIControlsSource = 'já carregada'
+# Origem para o log ("Controles visuais: {0}.") e o autoteste; o motivo de não
+# usar a DLL (quando havia uma) fica em $global:TIControlsError.
+$global:TIControlsSource = 'já carregados'
+$global:TIControlsError = $null
 if (-not ('TISuite.Native' -as [type])) {
     $csPath    = Join-Path $global:TIRoot 'src\Core\Controls.cs'
     $dllPath   = Join-Path $global:TIRoot 'bin\TISuite.Controls.dll'
@@ -19,20 +22,22 @@ if (-not ('TISuite.Native' -as [type])) {
             $want = ([string](Get-Content -LiteralPath $stampPath -Raw -Encoding UTF8)).Trim()
             $have = (Get-FileHash -LiteralPath $csPath -Algorithm SHA256).Hash
             if ($want -eq $have) {
-                Add-Type -Path $dllPath -ErrorAction Stop
+                Add-Type -LiteralPath $dllPath -ErrorAction Stop
                 $global:TIControlsSource = 'DLL pré-compilada'
             } else {
-                $global:TIControlsSource = 'compilada (DLL desatualizada)'
+                $global:TIControlsSource = 'compilados (DLL desatualizada)'
+                $global:TIControlsError = 'carimbo diferente do Controls.cs'
             }
         } catch {
-            $global:TIControlsSource = 'compilada (DLL não carregou)'
+            $global:TIControlsSource = 'compilados (DLL não carregou)'
+            $global:TIControlsError = $_.Exception.Message
         }
     }
 
     if (-not ('TISuite.Native' -as [type])) {
         $src = Get-Content -LiteralPath $csPath -Raw -Encoding UTF8
         Add-Type -TypeDefinition $src -ReferencedAssemblies System.dll, System.Drawing.dll, System.Windows.Forms.dll
-        if ($global:TIControlsSource -eq 'já carregada') { $global:TIControlsSource = 'compilada na hora' }
+        if ($global:TIControlsSource -eq 'já carregados') { $global:TIControlsSource = 'compilados na hora' }
     }
 }
 

@@ -1,12 +1,12 @@
 ﻿# =====================================================================
 # 02-DIALOGS.ps1 - Janelas modais: confirmação, entrada de texto e aviso (toast)
-# Os handlers abaixo rodam enquanto ShowDialog mantém o escopo da função
-# ativo, por isso podem referenciar variáveis locais diretamente.
+# Os handlers dos diálogos rodam enquanto ShowDialog mantém o escopo da função
+# ativo, por isso podem referenciar variáveis locais diretamente. O aviso
+# (toast) não é modal: os handlers dele usam só $global: e $this.
 # =====================================================================
 
+# Dono dos diálogos: a janela principal, quando já está visível
 function Get-TIOwner {
-    param($Owner)
-    if ($Owner) { return $Owner }
     if ($global:Form -and $global:Form.Visible) { return $global:Form }
     return $null
 }
@@ -24,68 +24,82 @@ function Add-TIDialogFrame {
     })
 }
 
-function Show-TIConfirm {
-    <#
-      Retorna $true/$false. Se -CheckText for informado, retorna
-      [pscustomobject] @{ OK = bool; Checked = bool }.
-      Estilo Danger: o foco começa em "Cancelar" e o Enter NÃO confirma sozinho
-      (só aciona o botão que estiver com foco).
-    #>
+# Anel de foco visível desde a abertura. Quando o diálogo abre por um clique, o
+# Windows esconde o foco até a primeira tecla, e nas confirmações perigosas o
+# técnico não via que o Enter aciona "Cancelar".
+# WM_CHANGEUISTATE (0x127): UIS_CLEAR (2) na palavra baixa, UISF_HIDEFOCUS (1) na alta.
+function Enable-TIFocusCues {
+    param($Form)
+    try { [void][TISuite.Native]::SendMessage($Form.Handle, 0x127, [IntPtr]0x10002, [IntPtr]::Zero) } catch { }
+}
+
+# Moldura comum dos diálogos: ícone, título, botão fechar (Esc), arrastar e borda
+function New-TIDialogForm {
     param(
-        [string]$Title = 'Confirmar operação',
-        [string]$Message = '',
-        [string]$ConfirmText = 'Confirmar',
-        [string]$CancelText = 'Cancelar',
-        [ValidateSet('Primary','Danger','Success')][string]$Style = 'Primary',
-        [string]$Icon = 'Warning',
-        [string]$CheckText = '',
-        [switch]$Force,
-        $Owner = $null
+        [string]$Title,
+        [string]$Icon = 'Info',
+        $IconColor = $null,
+        [int]$Width = 470
     )
-
-    if (-not $Force -and $global:TI.Settings.SuppressConfirm -and -not $CheckText) {
-        Write-TILog -Level 'Warn' -Message ("Confirmação dispensada pela configuração: {0}" -f $Title)
-        return $true
-    }
-
-    $ownerWnd = Get-TIOwner $Owner
-
     $f = New-Object System.Windows.Forms.Form
     $f.FormBorderStyle = 'None'
     $f.StartPosition = 'CenterParent'
     $f.BackColor = $global:Pal.CardAlt
     $f.ShowInTaskbar = $false
     $f.KeyPreview = $true
-    $f.MinimumSize = New-Object System.Drawing.Size(420, 200)
     $f.AutoScaleMode = 'None'
     $f.Text = $Title
+    $f.Width = $Width
 
-    $w = 470
-    $f.Width = $w
-    $padX = 22
-
-    $icoColor = switch ($Style) {
-        'Danger'  { $global:Pal.Danger }
-        'Success' { $global:Pal.Success }
-        default   { if ($Icon -eq 'Warning') { $global:Pal.Warning } else { $global:Pal.Primary } }
-    }
-    $ico = New-TIGlyph -Icon $Icon -Size 17 -Color $icoColor
-    $ico.Location = New-Object System.Drawing.Point($padX, 19)
+    $ico = New-TIGlyph -Icon $Icon -Size 17 -Color $(if ($IconColor) { $IconColor } else { $global:Pal.Primary })
+    $ico.Location = New-Object System.Drawing.Point(22, 19)
     $f.Controls.Add($ico)
 
     $lblTitle = New-TILabel -Text $Title -Size 11.5 -Bold
     $lblTitle.AutoSize = $false
     $lblTitle.AutoEllipsis = $true
-    $lblTitle.Size = New-Object System.Drawing.Size(($w - 50 - 56), 24)
+    $lblTitle.Size = New-Object System.Drawing.Size(($Width - 50 - 56), 24)
     $lblTitle.Location = New-Object System.Drawing.Point(50, 18)
     $f.Controls.Add($lblTitle)
 
     $btnClose = New-TIGlyphButton -Icon 'Close' -Tip 'Fechar (Esc)' -Size 34
-    $btnClose.Location = New-Object System.Drawing.Point(($w - 46), 12)
+    $btnClose.Location = New-Object System.Drawing.Point(($Width - 46), 12)
     $btnClose.Anchor = 'Top,Right'
     $btnClose.TabStop = $false
-    $btnClose.Add_Click({ $f.DialogResult = 'Cancel'; $f.Close() })
+    $btnClose.Add_Click({
+        $d = $this.FindForm()
+        if ($d) { $d.DialogResult = 'Cancel'; $d.Close() }
+    })
     $f.Controls.Add($btnClose)
+
+    $f.Add_MouseDown({ if ($_.Button -eq 'Left') { [TISuite.Native]::DragWindow($this) } })
+    Add-TIDialogFrame $f
+    return $f
+}
+
+# Janela de mensagem com um ou dois botões: base de Show-TIConfirm e Show-TIMessage.
+# Sem -CancelText, só o botão principal (aviso informativo). Devolve $true/$false.
+function Invoke-TIMessageDialog {
+    param(
+        [string]$Title,
+        [string]$Message = '',
+        [string]$ConfirmText = 'OK',
+        [string]$CancelText = '',
+        [string]$Style = 'Primary',
+        [string]$Icon = 'Info',
+        $IconColor = $null
+    )
+
+    $padX = 22
+    # Botões com largura pelo texto (New-TIButton cresce até caber); a janela
+    # também cresce se eles não couberem na largura padrão.
+    $btnCancel = $null
+    if ($CancelText) { $btnCancel = New-TIButton -Text $CancelText -Style 'Outline' -Width 110 -Height 38 }
+    $btnConfirm = New-TIButton -Text $ConfirmText -Style $Style -Width $(if ($btnCancel) { 150 } else { 120 }) -Height 38
+    $cancelW = if ($btnCancel) { $btnCancel.Width + 10 } else { 0 }
+    $w = [Math]::Max(470, ($padX + $cancelW + $btnConfirm.Width + 18))
+
+    $f = New-TIDialogForm -Title $Title -Icon $Icon -IconColor $IconColor -Width $w
 
     $lblMsg = New-TILabel -Text $Message -Size 9.5
     $lblMsg.MaximumSize = New-Object System.Drawing.Size(($w - $padX * 2 - 6), 0)
@@ -102,6 +116,10 @@ function Show-TIConfirm {
         $msgHost.BackColor = $global:Pal.CardAlt
         $msgHost.Location = New-Object System.Drawing.Point($padX, 62)
         $msgHost.Size = New-Object System.Drawing.Size(($w - $padX * 2), 340)
+        # Mede de novo descontando a barra vertical: sem isso surgia barra
+        # horizontal e o fim das linhas ficava embaixo da barra de rolagem.
+        $inner = $msgHost.Width - [System.Windows.Forms.SystemInformation]::VerticalScrollBarWidth - 4
+        $lblMsg.MaximumSize = New-Object System.Drawing.Size($inner, 0)
         $lblMsg.Location = New-Object System.Drawing.Point(0, 0)
         $msgHost.Controls.Add($lblMsg)
         $f.Controls.Add($msgHost)
@@ -109,22 +127,7 @@ function Show-TIConfirm {
         $msgBottom = 62 + 340
     }
 
-    $y = $msgBottom
-    $chk = $null
-    if ($CheckText) {
-        $y += 14
-        $chk = New-Object TISuite.ToggleSwitch
-        $chk.Location = New-Object System.Drawing.Point($padX, ($y + 1))
-        $f.Controls.Add($chk)
-        $chkLbl = New-TILabel -Text $CheckText -Size 8.5 -Muted
-        $chkLbl.Location = New-Object System.Drawing.Point(($padX + 50), ($y + 3))
-        $chkLbl.Cursor = [System.Windows.Forms.Cursors]::Hand
-        $chkLbl.Add_Click({ $chk.Checked = -not $chk.Checked })
-        $f.Controls.Add($chkLbl)
-        $y += 30
-    }
-
-    $y += 18
+    $y = $msgBottom + 18
     $div = New-Object System.Windows.Forms.Panel
     $div.BackColor = $global:Pal.BorderSoft
     $div.Location = New-Object System.Drawing.Point(0, $y)
@@ -133,106 +136,126 @@ function Show-TIConfirm {
     $f.Controls.Add($div)
 
     $y += 1
-    $btnCancel = New-TIButton -Text $CancelText -Style 'Outline' -Width 110 -Height 38
-    $btnConfirm = New-TIButton -Text $ConfirmText -Style $Style -Width 150 -Height 38
-    $btnCancel.Anchor = 'Top,Right'
     $btnConfirm.Anchor = 'Top,Right'
     $btnConfirm.Location = New-Object System.Drawing.Point(($w - $btnConfirm.Width - 18), ($y + 16))
-    $btnCancel.Location = New-Object System.Drawing.Point(($btnConfirm.Location.X - $btnCancel.Width - 10), ($y + 16))
-    $btnCancel.Add_Click({ $f.DialogResult = 'Cancel'; $f.Close() })
     $btnConfirm.Add_Click({ $f.DialogResult = 'OK'; $f.Close() })
-    if ($Style -eq 'Danger') {
-        $btnCancel.TabIndex = 0; $btnConfirm.TabIndex = 1
+    if ($btnCancel) {
+        $btnCancel.Anchor = 'Top,Right'
+        $btnCancel.Location = New-Object System.Drawing.Point(($btnConfirm.Location.X - $btnCancel.Width - 10), ($y + 16))
+        $btnCancel.Add_Click({ $f.DialogResult = 'Cancel'; $f.Close() })
+        if ($Style -eq 'Danger') {
+            $btnCancel.TabIndex = 0; $btnConfirm.TabIndex = 1
+        } else {
+            $btnConfirm.TabIndex = 0; $btnCancel.TabIndex = 1
+        }
+        $f.Controls.Add($btnCancel)
     } else {
-        $btnConfirm.TabIndex = 0; $btnCancel.TabIndex = 1
+        $btnConfirm.TabIndex = 0
     }
-    $f.Controls.Add($btnCancel)
     $f.Controls.Add($btnConfirm)
 
-    $h = $btnConfirm.Bottom + 18
-    $f.ClientSize = New-Object System.Drawing.Size($w, $h)
+    # Altura exata do conteúdo (sem altura mínima: ela deixava um vão abaixo dos botões)
+    $f.ClientSize = New-Object System.Drawing.Size($w, ($btnConfirm.Bottom + 18))
 
     $f.Add_Shown({
-        if ($Style -eq 'Danger') { [void]$btnCancel.Focus() } else { [void]$btnConfirm.Focus() }
+        Enable-TIFocusCues $f
+        if ($btnCancel -and $Style -eq 'Danger') { [void]$btnCancel.Focus() } else { [void]$btnConfirm.Focus() }
     })
     $f.Add_KeyDown({
         if ($_.KeyCode -eq 'Escape') { $f.DialogResult = 'Cancel'; $f.Close(); return }
         if ($_.KeyCode -eq 'Enter') {
             $_.SuppressKeyPress = $true
-            if ($f.ActiveControl -eq $btnCancel) { $f.DialogResult = 'Cancel'; $f.Close() }
+            if ($btnCancel -and $f.ActiveControl -eq $btnCancel) { $f.DialogResult = 'Cancel'; $f.Close() }
             elseif ($f.ActiveControl -eq $btnConfirm -or $Style -ne 'Danger') { $f.DialogResult = 'OK'; $f.Close() }
         }
     })
-    $f.Add_MouseDown({ if ($_.Button -eq 'Left') { [TISuite.Native]::DragWindow($f) } })
-    Add-TIDialogFrame $f
 
     [void][TISuite.Native]::RoundWindow($f)
 
-    $result = $f.ShowDialog($ownerWnd)
-    $ok = ($result -eq 'OK')
-    $checked = ($null -ne $chk -and $chk.Checked)
+    $result = $f.ShowDialog((Get-TIOwner))
     $f.Dispose()
+    return ($result -eq 'OK')
+}
 
-    # "Não pedir de novo" só vale quando o operador confirmou
-    if ($checked -and $ok) {
-        $global:TI.Settings.SuppressConfirm = $true
-        Save-TISettings
+function Show-TIConfirm {
+    <#
+      Pede confirmação e devolve $true (confirmou) ou $false.
+      Estilo Danger: o foco começa em "Cancelar" e o Enter NÃO confirma sozinho
+      (só aciona o botão que estiver com foco). A confirmação é sempre pedida.
+    #>
+    param(
+        [string]$Title = 'Confirmar operação',
+        [string]$Message = '',
+        [string]$ConfirmText = 'Confirmar',
+        [string]$CancelText = 'Cancelar',
+        [ValidateSet('Primary','Danger','Success')][string]$Style = 'Primary',
+        [string]$Icon = 'Warning'
+    )
+    $icoColor = switch ($Style) {
+        'Danger'  { $global:Pal.Danger }
+        'Success' { $global:Pal.Success }
+        default   { if ($Icon -eq 'Warning') { $global:Pal.Warning } else { $global:Pal.Primary } }
     }
+    return (Invoke-TIMessageDialog -Title $Title -Message $Message -ConfirmText $ConfirmText `
+                -CancelText $(if ($CancelText) { $CancelText } else { 'Cancelar' }) -Style $Style -Icon $Icon -IconColor $icoColor)
+}
 
-    if ($CheckText) { return [pscustomobject]@{ OK = $ok; Checked = ($checked -and $ok) } }
-    return $ok
+# Aviso informativo com um único botão ("Entendi"). Não devolve nada.
+function Show-TIMessage {
+    param(
+        [string]$Title = 'TI Suite',
+        [string]$Message = '',
+        [string]$Icon = 'Info',
+        [string]$OkText = 'Entendi'
+    )
+    $icoColor = switch ($Icon) {
+        'Warning' { $global:Pal.Warning }
+        'Error'   { $global:Pal.Danger }
+        default   { $global:Pal.Primary }
+    }
+    [void](Invoke-TIMessageDialog -Title $Title -Message $Message -ConfirmText $OkText -Style 'Primary' -Icon $Icon -IconColor $icoColor)
 }
 
 function Show-TIInput {
+    <#
+      Caixa de entrada de texto. Devolve o texto digitado ou $null (cancelou).
+        -Password   oculta o texto (com "Mostrar senha")
+        -Confirm    segunda caixa "Repita a senha" (ou "Repita o valor"); só
+                    confirma quando as duas são iguais
+        -Required   não aceita vazio
+        -Numeric    só dígitos de 0 a 9
+        -MaxLength  limite de caracteres (0 = sem limite)
+        -Validate   { param($t) ... } devolve '' (ou $null) quando o valor serve,
+                    ou a mensagem de erro, que aparece no próprio diálogo sem fechá-lo
+      Os erros aparecem dentro do diálogo; o foco volta para a caixa com problema.
+    #>
     param(
         [string]$Title = 'Entrada',
         [string]$Message = '',
         [string]$Label = 'Valor',
         [string]$Value = '',
         [switch]$Password,
+        [switch]$Confirm,
         [switch]$Required,
-        [string]$OkText = 'Aplicar',
-        [ValidateSet('Primary','Danger','Success')][string]$Style = 'Primary',
-        $Owner = $null
+        [switch]$Numeric,
+        [int]$MaxLength = 0,
+        [scriptblock]$Validate = $null,
+        [string]$OkText = 'Aplicar'
     )
-    $ownerWnd = Get-TIOwner $Owner
 
-    $f = New-Object System.Windows.Forms.Form
-    $f.FormBorderStyle = 'None'
-    $f.StartPosition = 'CenterParent'
-    $f.BackColor = $global:Pal.CardAlt
-    $f.ShowInTaskbar = $false
-    $f.KeyPreview = $true
-    $f.AutoScaleMode = 'None'
-    $f.Text = $Title
-
-    $w = 430
-    $f.Width = $w
     $padX = 22
+    $btnCancel = New-TIButton -Text 'Cancelar' -Style 'Outline' -Width 110 -Height 38
+    $btnOk = New-TIButton -Text $OkText -Style 'Primary' -Width 150 -Height 38
+    $w = [Math]::Max(430, ($padX + $btnCancel.Width + 10 + $btnOk.Width + 18))
+    $fieldW = $w - $padX * 2
 
-    $ico = New-TIGlyph -Icon $(if ($Password) { 'Lock' } else { 'Edit' }) -Size 17 -Color $global:Pal.Primary
-    $ico.Location = New-Object System.Drawing.Point($padX, 19)
-    $f.Controls.Add($ico)
-
-    $lblTitle = New-TILabel -Text $Title -Size 11.5 -Bold
-    $lblTitle.AutoSize = $false
-    $lblTitle.AutoEllipsis = $true
-    $lblTitle.Size = New-Object System.Drawing.Size(($w - 50 - 56), 24)
-    $lblTitle.Location = New-Object System.Drawing.Point(50, 18)
-    $f.Controls.Add($lblTitle)
-
-    $btnClose = New-TIGlyphButton -Icon 'Close' -Tip 'Fechar (Esc)' -Size 34
-    $btnClose.Location = New-Object System.Drawing.Point(($w - 46), 12)
-    $btnClose.Anchor = 'Top,Right'
-    $btnClose.TabStop = $false
-    $btnClose.Add_Click({ $f.DialogResult = 'Cancel'; $f.Close() })
-    $f.Controls.Add($btnClose)
+    $f = New-TIDialogForm -Title $Title -Icon $(if ($Password) { 'Lock' } else { 'Edit' }) -IconColor $global:Pal.Primary -Width $w
 
     $y = 60
     if ($Message) {
         $lblMsg = New-TILabel -Text $Message -Size 9 -Muted
         $lblMsg.Location = New-Object System.Drawing.Point($padX, $y)
-        $lblMsg.MaximumSize = New-Object System.Drawing.Size(($w - $padX * 2), 0)
+        $lblMsg.MaximumSize = New-Object System.Drawing.Size($fieldW, 0)
         $lblMsg.AutoSize = $true
         $f.Controls.Add($lblMsg)
         $y += $lblMsg.Height + 12
@@ -243,107 +266,288 @@ function Show-TIInput {
     $f.Controls.Add($lblField)
     $y += 19
 
+    $boxes = New-Object System.Collections.ArrayList
     $txt = New-Object System.Windows.Forms.TextBox
     $txt.Location = New-Object System.Drawing.Point($padX, $y)
-    $txt.Size = New-Object System.Drawing.Size(($w - $padX * 2), 30)
-    $txt.Anchor = 'Top,Left,Right'
-    $txt.BackColor = $global:Pal.Bg
-    $txt.ForeColor = $global:Pal.TextMain
-    $txt.Font = New-TIFont 10
-    $txt.BorderStyle = 'FixedSingle'
-    $txt.UseSystemPasswordChar = $Password.IsPresent
     $txt.Text = $Value
-    $txt.TabIndex = 0
-    $f.Controls.Add($txt)
+    [void]$boxes.Add($txt)
     $y += 34
+
+    $txt2 = $null
+    if ($Confirm) {
+        $lblField2 = New-TILabel -Text $(if ($Password) { 'Repita a senha' } else { 'Repita o valor' }) -Size 8.5 -Muted
+        $lblField2.Location = New-Object System.Drawing.Point($padX, $y)
+        $f.Controls.Add($lblField2)
+        $y += 19
+        $txt2 = New-Object System.Windows.Forms.TextBox
+        $txt2.Location = New-Object System.Drawing.Point($padX, $y)
+        [void]$boxes.Add($txt2)
+        $y += 34
+    }
+
+    $tab = 0
+    foreach ($b in $boxes) {
+        $b.Size = New-Object System.Drawing.Size($fieldW, 30)
+        $b.Anchor = 'Top,Left,Right'
+        $b.BackColor = $global:Pal.Bg
+        $b.ForeColor = $global:Pal.TextMain
+        $b.Font = New-TIFont 10
+        $b.BorderStyle = 'FixedSingle'
+        $b.UseSystemPasswordChar = $Password.IsPresent
+        if ($MaxLength -gt 0) { $b.MaxLength = $MaxLength }
+        $b.TabIndex = $tab
+        $tab++
+        $f.Controls.Add($b)
+    }
 
     if ($Password) {
         $sw = New-Object TISuite.ToggleSwitch
         $sw.Location = New-Object System.Drawing.Point($padX, $y)
-        $sw.TabIndex = 1
-        $sw.Add_CheckedChanged({ $txt.UseSystemPasswordChar = -not $sw.Checked })
+        $sw.TabIndex = $tab
+        $tab++
+        $sw.Add_CheckedChanged({
+            foreach ($b in $boxes) { $b.UseSystemPasswordChar = -not $sw.Checked }
+        })
         $f.Controls.Add($sw)
         $swLbl = New-TILabel -Text 'Mostrar senha' -Size 8.5 -Muted
         $swLbl.Location = New-Object System.Drawing.Point(($padX + 50), ($y + 3))
-        $swLbl.AutoSize = $true
         $swLbl.Cursor = [System.Windows.Forms.Cursors]::Hand
         $swLbl.Add_Click({ $sw.Checked = -not $sw.Checked })
         $f.Controls.Add($swLbl)
         $y += 32
     }
 
+    # Aviso de erro dentro do diálogo (quebra em até duas linhas; a janela acompanha)
     $lblErr = New-TILabel -Text '' -Size 8.5 -Color $global:Pal.Danger
+    $lblErr.MaximumSize = New-Object System.Drawing.Size($fieldW, 0)
     $lblErr.Location = New-Object System.Drawing.Point($padX, $y)
     $f.Controls.Add($lblErr)
+    $errTop = $y
 
     $div = New-Object System.Windows.Forms.Panel
     $div.BackColor = $global:Pal.BorderSoft
-    $div.Location = New-Object System.Drawing.Point(0, ($y + 22))
     $div.Size = New-Object System.Drawing.Size($w, 1)
     $div.Anchor = 'Top,Left,Right'
     $f.Controls.Add($div)
 
-    $btnCancel = New-TIButton -Text 'Cancelar' -Style 'Outline' -Width 110 -Height 38
-    $btnOk = New-TIButton -Text $OkText -Style $Style -Width 150 -Height 38
     $btnOk.Anchor = 'Top,Right'
     $btnCancel.Anchor = 'Top,Right'
-    $btnOk.TabIndex = 2
-    $btnCancel.TabIndex = 3
-    $btnOk.Location = New-Object System.Drawing.Point(($w - $btnOk.Width - 18), ($y + 38))
-    $btnCancel.Location = New-Object System.Drawing.Point(($btnOk.Location.X - $btnCancel.Width - 10), ($y + 38))
+    $btnOk.TabIndex = $tab
+    $btnCancel.TabIndex = $tab + 1
+    $btnOk.Left = $w - $btnOk.Width - 18
+    $btnCancel.Left = $btnOk.Left - $btnCancel.Width - 10
+    $f.Controls.Add($btnCancel)
+    $f.Controls.Add($btnOk)
+
+    $layoutBottom = {
+        $gap = [Math]::Max(22, ($lblErr.Height + 6))
+        $div.Top = $errTop + $gap
+        $btnOk.Top = $div.Top + 16
+        $btnCancel.Top = $div.Top + 16
+        $f.ClientSize = New-Object System.Drawing.Size($w, ($btnOk.Bottom + 18))
+        $f.Invalidate()
+    }
+    $showError = {
+        param([string]$Text, $Focus)
+        $lblErr.Text = $Text
+        & $layoutBottom
+        if ($Focus) { [void]$Focus.Focus(); $Focus.SelectAll() }
+    }
+    & $layoutBottom
+
+    if ($Numeric) {
+        foreach ($b in $boxes) {
+            $b.Add_KeyPress({
+                # Teclas de controle (apagar, Ctrl+V, Ctrl+C...) passam; o colado é conferido no OK
+                $n = [int]$_.KeyChar
+                if ($n -ge 32 -and $n -ne 127 -and ($n -lt 48 -or $n -gt 57)) {
+                    $_.Handled = $true
+                    & $showError 'Digite só números (0 a 9).' $null
+                }
+            })
+        }
+    }
+    foreach ($b in $boxes) {
+        $b.Add_TextChanged({ if ($lblErr.Text) { $lblErr.Text = ''; & $layoutBottom } })
+    }
+
     $btnCancel.Add_Click({ $f.DialogResult = 'Cancel'; $f.Close() })
     $btnOk.Add_Click({
-        if ($Required.IsPresent -and $txt.Text.Trim() -eq '') {
-            $lblErr.Text = 'Preencha este campo para continuar.'
-            [void]$txt.Focus()
+        $v = $txt.Text
+        $t = $v.Trim()
+        $err = ''
+        $bad = $txt
+        if ($Required -and $t -eq '') {
+            $err = 'Preencha este campo para continuar.'
+        } elseif ($Numeric -and $t -ne '' -and $t -notmatch '^[0-9]+$') {
+            $err = 'Digite só números (0 a 9).'
+        } elseif ($Validate) {
+            try {
+                $r = @(& $Validate $v) | Select-Object -Last 1
+                if ($r -is [bool]) { $err = $(if ($r) { '' } else { 'Valor inválido.' }) }
+                elseif ($null -ne $r) { $err = [string]$r }
+            } catch {
+                $err = ('Valor inválido: {0}' -f $_.Exception.Message)
+            }
+        }
+        if (-not $err -and $txt2 -and $txt2.Text -cne $v) {
+            $err = 'Os valores não conferem. Digite o mesmo valor nas duas caixas.'
+            if ($Password) { $err = 'As senhas não conferem. Digite a mesma senha nas duas caixas.' }
+            $bad = $txt2
+        }
+        if ($err) {
+            & $showError $err $bad
             return
         }
         $f.DialogResult = 'OK'
         $f.Close()
     })
-    $txt.Add_TextChanged({ if ($lblErr.Text) { $lblErr.Text = '' } })
-    $f.Controls.Add($btnCancel)
-    $f.Controls.Add($btnOk)
 
-    $f.ClientSize = New-Object System.Drawing.Size($w, ($btnOk.Bottom + 18))
-
-    $f.Add_Shown({ [void]$txt.Focus(); $txt.SelectAll() })
+    $f.Add_Shown({
+        Enable-TIFocusCues $f
+        [void]$txt.Focus()
+        $txt.SelectAll()
+    })
     $f.Add_KeyDown({
         if ($_.KeyCode -eq 'Escape') { $f.DialogResult = 'Cancel'; $f.Close(); return }
         if ($_.KeyCode -eq 'Enter') {
             $_.SuppressKeyPress = $true
             if ($f.ActiveControl -eq $btnCancel) { $f.DialogResult = 'Cancel'; $f.Close() }
+            elseif ($txt2 -and $f.ActiveControl -eq $txt -and $txt2.Text -eq '') { [void]$txt2.Focus() }
             else { $btnOk.PerformClick() }
         }
     })
-    $f.Add_MouseDown({ if ($_.Button -eq 'Left') { [TISuite.Native]::DragWindow($f) } })
-    Add-TIDialogFrame $f
 
     [void][TISuite.Native]::RoundWindow($f)
 
-    $ok = ($f.ShowDialog($ownerWnd) -eq 'OK')
+    $ok = ($f.ShowDialog((Get-TIOwner)) -eq 'OK')
     $val = $txt.Text
     $f.Dispose()
     if ($ok) { return $val }
     return $null
 }
 
+# ---------------------------------------------------------------------
+# Avisos (toasts)
+#   - um por vez, no canto inferior direito da janela principal, acima da
+#     barra de status (no canto da tela se a janela estiver minimizada);
+#   - tempo pelo tamanho do texto: 60 ms por caractere (mínimo 2,8 s),
+#     1,5x para aviso e 2x para erro (máximo 16 s); -Duration só aumenta;
+#   - mouse em cima pausa a contagem; clique fecha;
+#   - um aviso de erro visível não é trocado por outro: os seguintes esperam
+#     na fila até ele sair (o mesmo vale para Info/OK sobre um aviso).
+# ---------------------------------------------------------------------
+$global:ActiveToast = $null
+$global:TIToastQueue = New-Object System.Collections.ArrayList
+
+function Get-TIToastRank {
+    param([string]$Type)
+    if ($Type -eq 'Error') { return 2 }
+    if ($Type -eq 'Warn') { return 1 }
+    return 0
+}
+
+function Get-TIToastDuration {
+    param([string]$Text, [string]$Type = 'Info')
+    $ms = [Math]::Max(2800, 60 * $Text.Length)
+    if ($Type -eq 'Error') { $ms = $ms * 2 }
+    elseif ($Type -eq 'Warn') { $ms = [int]($ms * 1.5) }
+    return [int][Math]::Min(16000, $ms)
+}
+
 function Show-TIToast {
     param(
         [Parameter(Mandatory)][string]$Text,
         [ValidateSet('Success','Error','Warn','Info')][string]$Type = 'Info',
-        [int]$Duration = 2800
+        # Tempo mínimo em ms; vale o maior entre ele e o automático (pelo tamanho do texto)
+        [int]$Duration = 0
     )
     if (-not $global:Form) { return }
+    $req = @{ Text = $Text; Type = $Type; Duration = $Duration }
 
-    if ($global:ActiveToast) {
-        try { if ($global:ActiveToastTimer) { $global:ActiveToastTimer.Stop(); $global:ActiveToastTimer.Dispose() } } catch { }
-        try { $global:ActiveToast.Close(); $global:ActiveToast.Dispose() } catch { }
-        $global:ActiveToast = $null
-        $global:ActiveToastTimer = $null
+    $cur = $global:ActiveToast
+    if ($cur -and -not $cur.Form.IsDisposed -and $cur.Phase -ne 'Out') {
+        # Mesmo aviso de novo: só reinicia o tempo
+        if ($cur.Text -ceq $Text -and $cur.Type -eq $Type) { $cur.Held = 0; return }
+        $rc = Get-TIToastRank $cur.Type
+        $rn = Get-TIToastRank $Type
+        if ($rc -eq 2 -or $rn -lt $rc -or ($global:TIToastQueue.Count -gt 0 -and $rn -le $rc)) {
+            Add-TIToastToQueue $req
+            return
+        }
     }
+    Close-TIToast
+    Open-TIToast $req
+}
 
-    $pair = switch ($Type) {
+function Add-TIToastToQueue {
+    param($Req)
+    foreach ($q in $global:TIToastQueue) {
+        if ($q.Text -ceq $Req.Text -and $q.Type -eq $Req.Type) { return }
+    }
+    if ($global:TIToastQueue.Count -ge 4) {
+        # Fila cheia: sai o mais antigo de menor importância (ou o novo, se for o menor)
+        $drop = 0; $low = 9
+        for ($i = 0; $i -lt $global:TIToastQueue.Count; $i++) {
+            $r = Get-TIToastRank $global:TIToastQueue[$i].Type
+            if ($r -lt $low) { $low = $r; $drop = $i }
+        }
+        if ((Get-TIToastRank $Req.Type) -lt $low) { return }
+        $global:TIToastQueue.RemoveAt($drop)
+    }
+    [void]$global:TIToastQueue.Add($Req)
+}
+
+# Próximo da fila: o mais importante primeiro (erro, aviso, o resto); empate, o mais antigo
+function Show-TIToastNext {
+    if ($global:ActiveToast -or $global:TIToastQueue.Count -eq 0) { return }
+    $pick = 0; $best = -1
+    for ($i = 0; $i -lt $global:TIToastQueue.Count; $i++) {
+        $r = Get-TIToastRank $global:TIToastQueue[$i].Type
+        if ($r -gt $best) { $best = $r; $pick = $i }
+    }
+    $req = $global:TIToastQueue[$pick]
+    $global:TIToastQueue.RemoveAt($pick)
+    Open-TIToast $req
+}
+
+# Fecha na hora o aviso visível (sem puxar a fila)
+function Close-TIToast {
+    $st = $global:ActiveToast
+    $global:ActiveToast = $null
+    if (-not $st) { return }
+    try { $st.Timer.Stop(); $st.Timer.Dispose() } catch { }
+    try { $st.Form.Close(); $st.Form.Dispose() } catch { }
+}
+
+# Clique no aviso: some rápido e dá lugar ao próximo da fila
+function Hide-TIToast {
+    $st = $global:ActiveToast
+    if ($st -and $st.Phase -ne 'Out') { $st.Phase = 'Out'; $st.Fade = 0.25 }
+}
+
+function Get-TIToastLocation {
+    param([int]$Width, [int]$Height)
+    $main = $global:Form
+    $area = [System.Windows.Forms.Screen]::FromControl($main).WorkingArea
+    $x = $area.Right - $Width - 22
+    $y = $area.Bottom - $Height - 22
+    try {
+        if ($main.Visible -and $main.WindowState -ne 'Minimized') {
+            $b = $main.Bounds
+            $status = if ($global:StatusBar -and $global:StatusBar.Visible) { $global:StatusBar.Height } else { 0 }
+            $x = $b.Right - $Width - 18
+            $y = $b.Bottom - $status - $Height - 14
+        }
+    } catch { }
+    $x = [Math]::Max(($area.Left + 8), [Math]::Min($x, ($area.Right - $Width - 8)))
+    $y = [Math]::Max(($area.Top + 8), [Math]::Min($y, ($area.Bottom - $Height - 8)))
+    return (New-Object System.Drawing.Point($x, $y))
+}
+
+function Open-TIToast {
+    param($Req)
+    $pair = switch ($Req.Type) {
         'Success' { @{ Icon = 'Completed'; Color = $global:Pal.Success } }
         'Error'   { @{ Icon = 'Error'; Color = $global:Pal.Danger } }
         'Warn'    { @{ Icon = 'Warning'; Color = $global:Pal.Warning } }
@@ -358,6 +562,7 @@ function Show-TIToast {
     $f.BackColor = $global:Pal.CardAlt
     $f.Opacity = 0
     $f.AutoScaleMode = 'None'
+    $f.Cursor = [System.Windows.Forms.Cursors]::Hand
 
     # Faixa de cor à esquerda indica o tipo do aviso
     $accent = New-Object System.Windows.Forms.Panel
@@ -370,7 +575,7 @@ function Show-TIToast {
     $g.Location = New-Object System.Drawing.Point(18, 17)
     $f.Controls.Add($g)
 
-    $lbl = New-TILabel -Text $Text -Size 9.5
+    $lbl = New-TILabel -Text $Req.Text -Size 9.5
     $lbl.Location = New-Object System.Drawing.Point(44, 17)
     $lbl.AutoSize = $true
     $lbl.MaximumSize = New-Object System.Drawing.Size(360, 0)
@@ -381,52 +586,53 @@ function Show-TIToast {
     $h = [Math]::Max(52, $lbl.Height + 34)
     $f.ClientSize = New-Object System.Drawing.Size($w, $h)
     Add-TIDialogFrame $f
-
-    $area = [System.Windows.Forms.Screen]::FromControl($global:Form).WorkingArea
-    $f.Location = New-Object System.Drawing.Point(($area.Right - $w - 22), ($area.Bottom - $h - 22))
+    $f.Location = Get-TIToastLocation -Width $w -Height $h
 
     [void][TISuite.Native]::RoundWindow($f)
 
-    $global:ActiveToast = $f
-    [TISuite.Native]::ShowNoActivate($f)
-
-    $state = @{ Phase = 'In'; Steps = 0; Hold = [int]($Duration / 16) }
+    $ms = [Math]::Max($Req.Duration, (Get-TIToastDuration -Text $Req.Text -Type $Req.Type))
     $timer = New-Object System.Windows.Forms.Timer
     $timer.Interval = 16
-    $timer.Add_Tick({
-        if ($f.IsDisposed) { try { $timer.Stop(); $timer.Dispose() } catch { }; return }
-        $state.Steps++
-        switch ($state.Phase) {
-            'In' {
-                $f.Opacity = [Math]::Min(1.0, $f.Opacity + 0.14)
-                if ($f.Opacity -ge 1.0) { $state.Phase = 'Hold' }
-            }
-            'Hold' {
-                if ($state.Steps -ge $state.Hold) { $state.Phase = 'Out' }
-            }
-            'Out' {
-                $f.Opacity = [Math]::Max(0.0, $f.Opacity - 0.10)
-                if ($f.Opacity -le 0.0) {
-                    $timer.Stop()
-                    $timer.Dispose()
-                    try { $f.Dispose() } catch { }
-                    if ($global:ActiveToast -eq $f) { $global:ActiveToast = $null; $global:ActiveToastTimer = $null }
-                }
-            }
-        }
-    }.GetNewClosure())
-    $global:ActiveToastTimer = $timer
+    $global:ActiveToast = @{
+        Form = $f; Timer = $timer; Text = $Req.Text; Type = $Req.Type
+        Phase = 'In'; Held = 0; Hold = [int][Math]::Ceiling($ms / 16); Fade = 0.10
+    }
+
+    foreach ($c in @($f, $accent, $g, $lbl)) { $c.Add_Click({ Hide-TIToast }) }
+    $timer.Add_Tick({ param($s, $e) Step-TIToast -Timer $s })
+
+    [TISuite.Native]::ShowNoActivate($f)
     $timer.Start()
 }
 
-function Show-TIMessage {
-    param(
-        [string]$Title = 'TI Suite',
-        [string]$Message = '',
-        [string]$Icon = 'Info',
-        [ValidateSet('Primary','Danger','Success')][string]$Style = 'Primary',
-        $Owner = $null
-    )
-    return Show-TIConfirm -Title $Title -Message $Message -ConfirmText 'Entendi' -CancelText 'Fechar' `
-                           -Style $Style -Icon $Icon -Force -Owner $Owner
+function Step-TIToast {
+    param($Timer)
+    $st = $global:ActiveToast
+    if (-not $st -or -not [object]::ReferenceEquals($st.Timer, $Timer)) {
+        # Temporizador de um aviso que já saiu
+        try { $Timer.Stop(); $Timer.Dispose() } catch { }
+        return
+    }
+    $f = $st.Form
+    if ($f.IsDisposed) { Close-TIToast; Show-TIToastNext; return }
+    switch ($st.Phase) {
+        'In' {
+            $f.Opacity = [Math]::Min(1.0, $f.Opacity + 0.14)
+            if ($f.Opacity -ge 1.0) { $st.Phase = 'Hold' }
+        }
+        'Hold' {
+            # Mouse em cima pausa a contagem (dá tempo de ler)
+            $over = $false
+            try { $over = $f.Bounds.Contains([System.Windows.Forms.Control]::MousePosition) } catch { }
+            if (-not $over) { $st.Held++ }
+            if ($st.Held -ge $st.Hold) { $st.Phase = 'Out' }
+        }
+        'Out' {
+            $f.Opacity = [Math]::Max(0.0, $f.Opacity - $st.Fade)
+            if ($f.Opacity -le 0.0) {
+                Close-TIToast
+                Show-TIToastNext
+            }
+        }
+    }
 }

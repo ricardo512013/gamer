@@ -1,8 +1,7 @@
 ﻿{
-    "KeepGridSort":  true,
     "CompactConsole":  false,
-    "ClearLogStart":  false,
-    "ForceChangeOnLogon":  false,
+    "ConsoleHeight":  0,
     "CrispText":  false,
-    "SuppressConfirm":  false
+    "ForceChangeOnLogon":  false,
+    "WindowMaximized":  false
 }
