@@ -1,0 +1,52 @@
+﻿# =====================================================================
+# 00-CONTROLS.ps1 - Carrega a biblioteca de controles visuais (C#)
+#
+#   1. bin\TISuite.Controls.dll pré-compilada (gerada pelo dev\Build-Release.ps1),
+#      desde que o carimbo confira com o Controls.cs atual: abre bem mais rápido
+#      e não depende de compilar nada no PC.
+#   2. Sem a DLL (ou com Controls.cs editado depois do build), compila
+#      src\Core\Controls.cs na hora com o Add-Type (C# 5).
+# =====================================================================
+
+$global:TIControlsSource = 'já carregada'
+if (-not ('TISuite.Native' -as [type])) {
+    $csPath    = Join-Path $global:TIRoot 'src\Core\Controls.cs'
+    $dllPath   = Join-Path $global:TIRoot 'bin\TISuite.Controls.dll'
+    $stampPath = Join-Path $global:TIRoot 'bin\TISuite.Controls.stamp'
+
+    if ((Test-Path -LiteralPath $dllPath) -and (Test-Path -LiteralPath $stampPath) -and (Test-Path -LiteralPath $csPath)) {
+        try {
+            $want = ([string](Get-Content -LiteralPath $stampPath -Raw -Encoding UTF8)).Trim()
+            $have = (Get-FileHash -LiteralPath $csPath -Algorithm SHA256).Hash
+            if ($want -eq $have) {
+                Add-Type -Path $dllPath -ErrorAction Stop
+                $global:TIControlsSource = 'DLL pré-compilada'
+            } else {
+                $global:TIControlsSource = 'compilada (DLL desatualizada)'
+            }
+        } catch {
+            $global:TIControlsSource = 'compilada (DLL não carregou)'
+        }
+    }
+
+    if (-not ('TISuite.Native' -as [type])) {
+        $src = Get-Content -LiteralPath $csPath -Raw -Encoding UTF8
+        Add-Type -TypeDefinition $src -ReferencedAssemblies System.dll, System.Drawing.dll, System.Windows.Forms.dll
+        if ($global:TIControlsSource -eq 'já carregada') { $global:TIControlsSource = 'compilada na hora' }
+    }
+}
+
+# DPI: o layout usa posições/tamanhos fixos em pixels (AutoScaleMode = None).
+# Com o processo "DPI aware", notebooks em 125%/150% aumentam só as FONTES e o layout
+# desalinha (textos cortados/sobrepostos). Por padrão o Windows escala a janela inteira
+# (modo compatível: layout sempre igual, texto levemente suave). Quem quiser texto nítido
+# liga "CrispText" no config.json / Configurações (vale no próximo início).
+$script:TICrisp = $false
+try {
+    $cfgPath = if ($global:TIPortable) { Join-Path $global:TIRoot 'config.json' } else { Join-Path $env:LOCALAPPDATA 'TI-Suite\config.json' }
+    if (Test-Path -LiteralPath $cfgPath) {
+        $cfgJ = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($null -ne $cfgJ.CrispText) { $script:TICrisp = [bool]$cfgJ.CrispText }
+    }
+} catch { }
+if ($script:TICrisp) { [TISuite.Native]::EnableDpi() | Out-Null }

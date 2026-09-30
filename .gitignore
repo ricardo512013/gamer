@@ -1,0 +1,6 @@
+bin/
+dist/
+logs/
+inventario/
+manifest.sha256
+*.log

@@ -1,0 +1,8 @@
+﻿{
+    "KeepGridSort":  true,
+    "CompactConsole":  false,
+    "ClearLogStart":  false,
+    "ForceChangeOnLogon":  false,
+    "CrispText":  false,
+    "SuppressConfirm":  false
+}
