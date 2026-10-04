@@ -457,6 +457,9 @@ end
 
 local function updateLockVisual(plot: PlotState)
 	local locked = PlotService.IsLocked(plot)
+	if plot.Model:GetAttribute("Locked") ~= locked then
+		plot.Model:SetAttribute("Locked", locked)
+	end
 	plot.Laser.Transparency = if locked then 0.35 else 1
 	local text: string
 	if not plot.Owner then

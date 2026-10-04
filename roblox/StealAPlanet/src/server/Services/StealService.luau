@@ -182,6 +182,10 @@ local function steal(thief: Player, plot: PlotService.PlotState, slotIndex: numb
 	if not slot or not model or slot.Stealing then
 		return
 	end
+	if model:GetAttribute("SpinCF") == nil then
+		-- still flying onto its pedestal (the tween would drag the thief along)
+		return
+	end
 	local victimData = DataService.Get(victim)
 	local sd = if victimData then victimData.Slots[tostring(slotIndex)] else nil
 	local def = if sd then Planets.Get(sd.Id) else nil

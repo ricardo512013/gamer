@@ -402,6 +402,27 @@ function World.Start()
 		end
 	end)
 
+	-- hide "Steal" on planets of locked bases
+	task.spawn(function()
+		while true do
+			task.wait(0.3)
+			for model, entry in tracked do
+				if
+					model:GetAttribute("Mode") == "Base"
+					and model:GetAttribute("OwnerUserId") ~= player.UserId
+					and model:GetAttribute("Carried") ~= true
+				then
+					local prompt = entry.Core:FindFirstChild("PlanetPrompt")
+					local folder = model.Parent
+					local plotModel = if folder then folder.Parent else nil
+					if prompt and prompt:IsA("ProximityPrompt") and plotModel then
+						prompt.Enabled = plotModel:GetAttribute("Locked") ~= true
+					end
+				end
+			end
+		end
+	end)
+
 	task.delay(Config.FavoritePromptMinutes * 60, function()
 		if game.PlaceId ~= 0 then
 			pcall(function()

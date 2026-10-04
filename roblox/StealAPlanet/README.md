@@ -153,8 +153,10 @@ paga, o servidor inteiro ganha, e o nome de quem comprou aparece para todos.
 
 Ninguém consegue garantir que um jogo vai explodir. O que os sucessos do gênero têm em comum:
 
-1. **Ícone e thumbnail:** um planeta fofo e enorme, um personagem correndo com ele na cabeça e um
-   buraco negro raro brilhando. Faça 3 versões e use o teste A/B de thumbnails do Roblox.
+1. **Ícone e thumbnail:** já tem uma versão inicial em [`marketing/icon.png`](marketing/icon.png)
+   (512×512) e [`marketing/thumbnail.png`](marketing/thumbnail.png) (1920×1080), geradas a partir de
+   `marketing/art.html`. Depois que o jogo crescer, vale encomendar uma arte profissional. Faça 3
+   versões e use o teste A/B de thumbnails do Roblox.
 2. **Título e descrição:** "Steal a Planet 🪐 [UPDATE 1]". Ponha as palavras que as pessoas buscam:
    *steal, planet, black hole, tycoon*.
 3. **TikTok / YouTube Shorts todos os dias:** "roubei o BURACO NEGRO dele", "achei o TON 618
@@ -182,6 +184,7 @@ src/server/Services/        Data, Map, Plot, Belt, Steal, Tool, Event, Progressi
 src/client/                 StarterPlayerScripts.Client (Controllers + UI)
 tests/                      testes de lógica e de modelos (Lune)
 tools/build.sh              testes, compilação e mapa embutido -> build/StealAPlanet.rbxl
+marketing/                  ícone e thumbnail iniciais (art.html gera os PNGs)
 ```
 
 Para trabalhar com Rojo: `rojo serve` + plugin do Rojo no Studio. Para gerar o `.rbxl`, rode

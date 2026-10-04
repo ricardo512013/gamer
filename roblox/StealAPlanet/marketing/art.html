@@ -1,0 +1,124 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  html,body{margin:0;padding:0;background:#0b0620;overflow:hidden}
+  svg{display:block}
+  text{font-family:"DejaVu Sans","FreeSans",sans-serif;font-weight:bold;paint-order:stroke fill;stroke-linejoin:round}
+</style></head>
+<body>
+<script>
+const params = new URLSearchParams(location.search);
+const W = +params.get('w') || 512, H = +params.get('h') || 512;
+const mode = params.get('mode') || 'icon';
+let seed = 7;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+
+function planetFace(cx, cy, r) {
+  const eye = (s) => {
+    const ex = cx + s * r * 0.34, ey = cy - r * 0.12;
+    return `<circle cx="${ex}" cy="${ey}" r="${r*0.15}" fill="#1a1024"/>
+            <circle cx="${ex + r*0.05}" cy="${ey - r*0.06}" r="${r*0.055}" fill="#fff"/>
+            <ellipse cx="${cx + s * r * 0.6}" cy="${cy + r*0.12}" rx="${r*0.13}" ry="${r*0.07}" fill="#ff7aa8" opacity="0.75"/>`;
+  };
+  return eye(-1) + eye(1) +
+    `<path d="M ${cx - r*0.2} ${cy + r*0.14} Q ${cx} ${cy + r*0.38} ${cx + r*0.2} ${cy + r*0.14}" stroke="#3c1828" stroke-width="${r*0.07}" fill="none" stroke-linecap="round"/>`;
+}
+
+function saturn(cx, cy, r, id) {
+  return `
+  <defs>
+    <radialGradient id="body${id}" cx="35%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#ffe9a8"/><stop offset="55%" stop-color="#f7b955"/><stop offset="100%" stop-color="#c9752c"/>
+    </radialGradient>
+    <linearGradient id="ring${id}" x1="0" x2="1">
+      <stop offset="0%" stop-color="#b98cff"/><stop offset="50%" stop-color="#fff1c2"/><stop offset="100%" stop-color="#ff8fd0"/>
+    </linearGradient>
+    <clipPath id="top${id}"><rect x="${cx - r*3}" y="${cy - r*3}" width="${r*6}" height="${r*3}"/></clipPath>
+  </defs>
+  <g transform="rotate(-14 ${cx} ${cy})">
+    <ellipse cx="${cx}" cy="${cy}" rx="${r*1.95}" ry="${r*0.5}" fill="none" stroke="url(#ring${id})" stroke-width="${r*0.2}" clip-path="url(#top${id})" opacity="0.95"/>
+  </g>
+  <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#body${id})" stroke="#2a1640" stroke-width="${r*0.05}"/>
+  <path d="M ${cx - r*0.98} ${cy - r*0.42} Q ${cx} ${cy - r*0.3} ${cx + r*0.98} ${cy - r*0.42}" stroke="#e3923f" stroke-width="${r*0.1}" fill="none" opacity="0.7"/>
+  <path d="M ${cx - r*0.9} ${cy + r*0.55} Q ${cx} ${cy + r*0.68} ${cx + r*0.9} ${cy + r*0.55}" stroke="#d27a33" stroke-width="${r*0.1}" fill="none" opacity="0.6"/>
+  ${planetFace(cx, cy, r)}
+  <g transform="rotate(-14 ${cx} ${cy})">
+    <path d="M ${cx - r*1.95} ${cy} A ${r*1.95} ${r*0.5} 0 0 0 ${cx + r*1.95} ${cy}" fill="none" stroke="url(#ring${id})" stroke-width="${r*0.2}"/>
+  </g>`;
+}
+
+function blackHole(cx, cy, r) {
+  return `
+  <defs><radialGradient id="bhglow"><stop offset="40%" stop-color="#ff9a3c" stop-opacity="0.9"/><stop offset="100%" stop-color="#ff5a1f" stop-opacity="0"/></radialGradient></defs>
+  <circle cx="${cx}" cy="${cy}" r="${r*1.9}" fill="url(#bhglow)"/>
+  <ellipse cx="${cx}" cy="${cy}" rx="${r*2.1}" ry="${r*0.45}" fill="none" stroke="#ffb35c" stroke-width="${r*0.18}" transform="rotate(12 ${cx} ${cy})"/>
+  <circle cx="${cx}" cy="${cy}" r="${r}" fill="#05020a" stroke="#ffd59a" stroke-width="${r*0.08}"/>
+  <circle cx="${cx - r*0.34}" cy="${cy - r*0.1}" r="${r*0.14}" fill="#fff"/><circle cx="${cx + r*0.34}" cy="${cy - r*0.1}" r="${r*0.14}" fill="#fff"/>
+  <path d="M ${cx - r*0.18} ${cy + r*0.25} Q ${cx} ${cy + r*0.42} ${cx + r*0.18} ${cy + r*0.25}" stroke="#fff" stroke-width="${r*0.07}" fill="none" stroke-linecap="round"/>`;
+}
+
+function earth(cx, cy, r) {
+  return `
+  <defs><radialGradient id="earthg" cx="35%" cy="30%" r="75%"><stop offset="0%" stop-color="#8fd3ff"/><stop offset="100%" stop-color="#2a63d8"/></radialGradient></defs>
+  <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#earthg)" stroke="#16204a" stroke-width="${r*0.06}"/>
+  <path d="M ${cx - r*0.7} ${cy - r*0.5} q ${r*0.3} ${-r*0.25} ${r*0.55} 0 q ${r*0.1} ${r*0.3} ${-r*0.2} ${r*0.35} q ${-r*0.3} ${r*0.05} ${-r*0.35} ${-r*0.35}z" fill="#4fc35f"/>
+  <path d="M ${cx + r*0.25} ${cy + r*0.35} q ${r*0.35} ${-r*0.1} ${r*0.5} ${r*0.15} q ${-r*0.1} ${r*0.3} ${-r*0.45} ${r*0.25}z" fill="#4fc35f"/>
+  ${planetFace(cx, cy, r)}`;
+}
+
+function runner(x, y, s) {
+  // blocky avatar running with arms up (carrying)
+  const c = '#ffd23f', shirt = '#3fa7ff', pants = '#2d2a6e';
+  return `<g transform="translate(${x} ${y}) scale(${s})" stroke="#140a28" stroke-width="5" stroke-linejoin="round">
+    <rect x="-38" y="40" width="30" height="78" rx="6" fill="${pants}" transform="rotate(-25 -23 40)"/>
+    <rect x="8" y="40" width="30" height="78" rx="6" fill="${pants}" transform="rotate(28 23 40)"/>
+    <rect x="-42" y="-50" width="84" height="95" rx="8" fill="${shirt}"/>
+    <rect x="-70" y="-120" width="28" height="80" rx="6" fill="${c}" transform="rotate(-12 -56 -45)"/>
+    <rect x="42" y="-120" width="28" height="80" rx="6" fill="${c}" transform="rotate(12 56 -45)"/>
+    <rect x="-30" y="-108" width="60" height="58" rx="10" fill="${c}"/>
+    <circle cx="-11" cy="-84" r="5" fill="#140a28" stroke="none"/><circle cx="11" cy="-84" r="5" fill="#140a28" stroke="none"/>
+    <path d="M -12 -66 Q 0 -56 12 -66" fill="none" stroke-width="4"/>
+  </g>`;
+}
+
+function stars(n) {
+  let s = '';
+  for (let i = 0; i < n; i++) {
+    const x = rnd() * W, y = rnd() * H, r = rnd() * 1.8 + 0.4;
+    s += `<circle cx="${x}" cy="${y}" r="${r}" fill="#fff" opacity="${0.4 + rnd()*0.6}"/>`;
+  }
+  return s;
+}
+
+function title(x, y, size, anchor) {
+  return `
+  <defs><linearGradient id="tgrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#fff6b0"/><stop offset="100%" stop-color="#ffb02e"/></linearGradient></defs>
+  <text x="${x}" y="${y - size*0.95}" font-size="${size*0.55}" fill="#ffffff" stroke="#1b0b3a" stroke-width="${size*0.14}" text-anchor="${anchor}">STEAL A</text>
+  <text x="${x}" y="${y}" font-size="${size}" fill="url(#tgrad)" stroke="#1b0b3a" stroke-width="${size*0.16}" text-anchor="${anchor}">PLANET</text>`;
+}
+
+let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <defs><radialGradient id="bg" cx="50%" cy="40%" r="80%"><stop offset="0%" stop-color="#5a2ca8"/><stop offset="55%" stop-color="#22105a"/><stop offset="100%" stop-color="#090418"/></radialGradient></defs>
+  <rect width="${W}" height="${H}" fill="url(#bg)"/>${stars(mode === 'icon' ? 120 : 380)}`;
+if (mode === 'icon') {
+  svg += blackHole(W*0.8, H*0.18, W*0.08);
+  svg += earth(W*0.17, H*0.2, W*0.07);
+  svg += saturn(W*0.5, H*0.45, W*0.21, 'a');
+  svg += title(W*0.5, H*0.93, W*0.17, 'middle');
+} else {
+  svg += blackHole(W*0.9, H*0.17, H*0.075);
+  svg += earth(W*0.56, H*0.16, H*0.055);
+  // speed lines behind the runner
+  for (let i = 0; i < 5; i++) {
+    const y = H*(0.62 + i*0.06);
+    svg += `<rect x="${W*0.56}" y="${y}" width="${W*(0.06 + rnd()*0.04)}" height="${H*0.012}" rx="${H*0.006}" fill="#ffffff" opacity="0.35"/>`;
+  }
+  svg += runner(W*0.72, H*0.76, H/720);
+  svg += saturn(W*0.72, H*0.485, H*0.125, 'b');
+  svg += title(W*0.3, H*0.62, H*0.2, 'middle');
+  svg += `<text x="${W*0.3}" y="${H*0.8}" font-size="${H*0.055}" fill="#9dffb6" stroke="#1b0b3a" stroke-width="${H*0.014}" text-anchor="middle">BUY • STEAL • DEFEND</text>`;
+}
+svg += `</svg>`;
+document.body.innerHTML = svg;
+</script>
+</body></html>
