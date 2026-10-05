@@ -8,6 +8,8 @@
 #     selecionou um trecho, a vista e a seleção ficam onde estavam.
 #   - Auditoria (logs\audit.csv) não se perde quando o arquivo está aberto no
 #     Excel: a linha fica pendente e é gravada assim que der (ou ao fechar).
+#   - No WinPE (modo recuperação) não há Explorer: o botão Logs abre o console
+#     de hoje no Bloco de notas e Exportar grava direto em logs\ do pendrive.
 # =====================================================================
 
 $global:LogEntries = New-Object System.Collections.ArrayList
@@ -56,6 +58,21 @@ $script:LogChips = @(
 function Format-TILogLine {
     param($Entry)
     return ('[{0}] {1,-7} {2}' -f $Entry.Time.ToString('HH:mm:ss'), $script:LogLevelTag[$Entry.Level], $Entry.Text)
+}
+
+# Modo de abertura em texto (cabeçalho do console salvo, exportação e Configurações)
+function Get-TIModeText {
+    if ($global:TIWinPE) { return 'Modo recuperação (WinPE)' }
+    if ($global:TIRecovery) { return 'Modo recuperação' }
+    if ($global:TIPortable) { return 'Modo portátil (USB)' }
+    return 'Modo instalado'
+}
+
+# Quem roda o app, para o console salvo e a auditoria (no WinPE é sempre SYSTEM)
+function Get-TILogOperator {
+    $u = [string]$env:USERNAME
+    if ($global:TIWinPE) { return ('{0} (WinPE)' -f $(if ($u) { $u } else { 'SYSTEM' })) }
+    return $u
 }
 
 # Pasta dos logs (a mesma do exceptions.log e do audit.csv)
@@ -452,7 +469,8 @@ function Add-TILogFileLine {
         $sep = '=' * 69
         [void]$lf.Buffer.AppendLine($sep)
         [void]$lf.Buffer.AppendLine((' Sessão iniciada em {0}' -f (Get-Date -Format 'dd/MM/yyyy HH:mm:ss')))
-        [void]$lf.Buffer.AppendLine((' Computador: {0} | Operador: {1} | TI Suite v{2}' -f $env:COMPUTERNAME, $env:USERNAME, $global:TI.Version))
+        [void]$lf.Buffer.AppendLine((' Computador: {0} | Operador: {1} | TI Suite v{2}' -f $env:COMPUTERNAME, (Get-TILogOperator), $global:TI.Version))
+        if ($global:TIRecovery) { [void]$lf.Buffer.AppendLine((' {0}' -f (Get-TIModeText))) }
         [void]$lf.Buffer.AppendLine($sep)
         Start-TILogFileTimer
     }
@@ -589,7 +607,7 @@ function Write-TIAudit {
     )
     $q = { param($t) '"' + ([string]$t -replace '"', '""') + '"' }
     $line = (@(
-        (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $env:COMPUTERNAME, $env:USERNAME, $Action, $Result, $Detail
+        (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $env:COMPUTERNAME, (Get-TILogOperator), $Action, $Result, $Detail
     ) | ForEach-Object { & $q $_ }) -join ';'
     [void]$global:TIAuditPending.Add($line)
     [void](Save-TIAuditPending)
@@ -679,6 +697,9 @@ function Copy-TILog {
     }
 }
 
+# Botão Logs (console) e Configurações. Fora do WinPE: Explorer na pasta de logs com
+# o audit.csv (ou o console de hoje) selecionado. No WinPE não há Explorer: abre o
+# console de hoje no Bloco de notas (o Arquivo > Abrir dele mostra os outros registros).
 function Open-TILogFolder {
     $dir = Get-TILogDir
     if (-not $dir) {
@@ -687,9 +708,21 @@ function Open-TILogFolder {
     }
     try {
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        Sync-TILogFile
         $audit = Join-Path $dir 'audit.csv'
         $session = Get-TILogFilePath
+        if ($global:TIWinPE) {
+            # Grava já o que está na fila: o Bloco de notas mostra o console até agora
+            Sync-TILogFile -Final
+            $pick = if ($session -and (Test-Path -LiteralPath $session)) { $session } elseif (Test-Path -LiteralPath $audit) { $audit } else { $null }
+            if ($pick) {
+                Start-Process -FilePath (Get-TINotepadPath) -ArgumentList ('"{0}"' -f $pick) -ErrorAction Stop
+                Show-TIToast -Text ('Aberto no Bloco de notas. Auditoria e consoles anteriores: {0} (Arquivo > Abrir).' -f $dir) -Type 'Info'
+            } else {
+                Show-TIToast -Text ('Ainda não há registros salvos em {0}.' -f $dir) -Type 'Info'
+            }
+            return
+        }
+        Sync-TILogFile
         $pick = if (Test-Path -LiteralPath $audit) { $audit } elseif ($session -and (Test-Path -LiteralPath $session)) { $session } else { $null }
         if ($pick) {
             Start-Process -FilePath 'explorer.exe' -ArgumentList ('/select,"{0}"' -f $pick)
@@ -707,14 +740,10 @@ function Export-TILog {
         Show-TIToast -Text 'O console está vazio: nada para exportar.' -Type 'Warn'
         return
     }
-    $dlg = New-Object System.Windows.Forms.SaveFileDialog
-    $dlg.Title = 'Exportar console'
-    $dlg.Filter = 'Texto (*.txt)|*.txt|Todos os arquivos (*.*)|*.*'
-    $dlg.FileName = ('TI-Suite-console-{0}-{1}.txt' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmm'))
-    # Modo portátil: abre na pasta de logs do pendrive, não nos Documentos do PC atendido
-    $logDir = Get-TILogDir
-    if ($global:TIPortable -and $logDir -and (Test-Path -LiteralPath $logDir)) { $dlg.InitialDirectory = $logDir }
-    if ($dlg.ShowDialog() -ne 'OK') { $dlg.Dispose(); return }
+    # "Salvar como" (no modo portátil abre em logs\ do pendrive); no WinPE grava direto em logs\
+    $path = Select-TISaveFile -Title 'Exportar console' -Filter 'Texto (*.txt)|*.txt|Todos os arquivos (*.*)|*.*' `
+                -FileName ('TI-Suite-console-{0}-{1}.txt' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmm')) -Folder 'logs'
+    if (-not $path) { return }
 
     $sb = New-Object System.Text.StringBuilder
     [void]$sb.AppendLine('=====================================================================')
@@ -722,8 +751,9 @@ function Export-TILog {
     [void]$sb.AppendLine('=====================================================================')
     [void]$sb.AppendLine((' Data       : {0}' -f (Get-Date -Format 'dd/MM/yyyy HH:mm:ss')))
     [void]$sb.AppendLine((' Computador : {0}' -f $env:COMPUTERNAME))
-    [void]$sb.AppendLine((' Operador   : {0}{1}' -f $env:USERNAME, $(if ($global:TI.Elevated) { ' (administrador)' } else { '' })))
+    [void]$sb.AppendLine((' Operador   : {0}{1}' -f (Get-TILogOperator), $(if ($global:TI.Elevated -and -not $global:TIWinPE) { ' (administrador)' } else { '' })))
     [void]$sb.AppendLine((' Versão     : {0}' -f $global:TI.Version))
+    [void]$sb.AppendLine((' Modo       : {0}' -f (Get-TIModeText)))
     [void]$sb.AppendLine((' Linhas     : {0} (todas, inclusive os detalhes)' -f $global:LogEntries.Count))
     if ($script:LogTrimmed) {
         $file = Get-TILogFilePath
@@ -736,14 +766,14 @@ function Export-TILog {
     [void]$sb.AppendLine('=====================================================================')
 
     try {
-        [System.IO.File]::WriteAllText($dlg.FileName, $sb.ToString(), (New-Object System.Text.UTF8Encoding($true)))
-        Write-TILog -Level 'Success' -Message ("Console exportado para: {0}" -f $dlg.FileName)
-        Show-TIToast -Text 'Console exportado.' -Type 'Success'
+        [System.IO.File]::WriteAllText($path, $sb.ToString(), (New-Object System.Text.UTF8Encoding($true)))
+        Write-TILog -Level 'Success' -Message ("Console exportado para: {0}" -f $path)
+        if ($global:TIWinPE) { Show-TIToast -Text ('Console salvo em {0}' -f $path) -Type 'Success' -Duration 8000 }
+        else { Show-TIToast -Text 'Console exportado.' -Type 'Success' }
     } catch {
         Write-TILog -Level 'Error' -Message ("Falha ao exportar o console: {0}" -f $_.Exception.Message)
         Show-TIToast -Text 'Não foi possível salvar o arquivo.' -Type 'Error'
     }
-    $dlg.Dispose()
 }
 
 # ---------------------------------------------------------------------
@@ -843,9 +873,14 @@ function Initialize-TILogPanel {
 
     $btnCopy = New-TIButton -Text 'Copiar' -Style 'Ghost' -Width 70 -Height 26 -Tip 'Copiar as linhas visíveis (ou só o trecho selecionado)'
     $btnCopy.Add_Click({ Copy-TILog })
-    $btnExp = New-TIButton -Text 'Exportar' -Style 'Ghost' -Width 80 -Height 26 -Tip 'Salvar o console completo, com os detalhes, em .txt (Ctrl+E)'
+    # No WinPE: sem Explorer nem "Salvar como" (veja Open-TILogFolder e Export-TILog)
+    $expTip = if ($global:TIWinPE) { 'Salvar o console completo, com os detalhes, na pasta logs do pendrive (Ctrl+E)' }
+              else { 'Salvar o console completo, com os detalhes, em .txt (Ctrl+E)' }
+    $dirTip = if ($global:TIWinPE) { 'Abrir o console salvo de hoje no Bloco de notas (auditoria e dias anteriores ficam na pasta logs do pendrive)' }
+              else { 'Abrir a pasta de logs: auditoria (audit.csv) e o console salvo de cada dia' }
+    $btnExp = New-TIButton -Text 'Exportar' -Style 'Ghost' -Width 80 -Height 26 -Tip $expTip
     $btnExp.Add_Click({ Export-TILog })
-    $btnDir = New-TIButton -Text 'Logs' -Icon 'FolderOpen' -Style 'Ghost' -Width 70 -Height 26 -Tip 'Abrir a pasta de logs: auditoria (audit.csv) e o console salvo de cada dia'
+    $btnDir = New-TIButton -Text 'Logs' -Icon $(if ($global:TIWinPE) { 'Document' } else { 'FolderOpen' }) -Style 'Ghost' -Width 70 -Height 26 -Tip $dirTip
     $btnDir.Add_Click({ Open-TILogFolder })
     $btnClr = New-TIButton -Text 'Limpar' -Style 'Ghost' -Width 70 -Height 26 -Tip 'Limpar a tela do console (Ctrl+L). O arquivo da sessão em logs continua completo.'
     $btnClr.Add_Click({ Reset-TILog })

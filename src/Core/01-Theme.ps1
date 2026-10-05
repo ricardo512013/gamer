@@ -20,7 +20,7 @@ $global:Theme = @{
 if (-not $global:TI) {
     $global:TI = @{}
 }
-$global:TI.Version    = '1.4.0'
+$global:TI.Version    = '1.5.0'
 $global:TI.Elevated   = $false
 $global:TI.Busy       = $false
 $global:TI.ActiveId   = $null
@@ -771,11 +771,11 @@ function Export-TIGridCsv {
     param($Grid)
     $rows = @($Grid.Rows)
     if ($rows.Count -eq 0) { return }
-    $dlg = New-Object System.Windows.Forms.SaveFileDialog
-    $dlg.Filter = 'Planilha CSV (*.csv)|*.csv'
-    $dlg.FileName = ('{0}-{1}.csv' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmm'))
+    # Select-TISaveFile funciona no Windows aberto (diálogo) e no WinPE (grava em relatorios\)
+    $path = Select-TISaveFile -Title 'Exportar a lista' -Filter 'Planilha CSV (*.csv)|*.csv' `
+            -FileName ('{0}-{1}.csv' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmm')) -Folder 'relatorios'
+    if (-not $path) { return }
     try {
-        if ($dlg.ShowDialog($global:Form) -ne 'OK') { return }
         $cols = @($Grid.Columns | Where-Object { $_.Visible -and $_.HeaderText } | Sort-Object DisplayIndex)
         $lines = New-Object System.Collections.ArrayList
         $fmt = { param($v) '"' + ([string]$v).Replace('"', '""') + '"' }
@@ -789,12 +789,10 @@ function Export-TIGridCsv {
             }) -join ';'))
         }
         # ; e UTF-8 com BOM: abre certo no Excel em português
-        [System.IO.File]::WriteAllText($dlg.FileName, (($lines -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
-        Show-TIToast -Text ('Lista exportada: {0}' -f (Split-Path -Leaf $dlg.FileName)) -Type 'Success'
+        [System.IO.File]::WriteAllText($path, (($lines -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding($true)))
+        Show-TIToast -Text ('Lista exportada: {0}' -f (Split-Path -Leaf $path)) -Type 'Success'
     } catch {
         Show-TIToast -Text ('Não foi possível exportar: {0}' -f $_.Exception.Message) -Type 'Error'
-    } finally {
-        $dlg.Dispose()
     }
 }
 

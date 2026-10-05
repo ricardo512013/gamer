@@ -1,7 +1,8 @@
 # TI Suite — Suporte Escolar
 
 Painel portátil para a equipe de TI cuidar dos computadores da escola: limpeza e perfis de usuários,
-saúde do PC, inventário, programas, contas locais e rede. Roda direto do pendrive, sem instalar nada.
+saúde do PC, inventário, programas, contas locais, rede e backup. Roda direto do pendrive, sem instalar nada.
+O mesmo pendrive pode dar **boot** e reparar o Windows que não abre (sem reinstalar).
 
 ## Como usar (qualquer PC)
 
@@ -30,10 +31,11 @@ Apague o arquivo `portable.config`. A configuração, os logs e o inventário pa
 | Ctrl+1 | Início | Disco, memória, identificação do equipamento, rede e **Copiar resumo** para o chamado |
 | Ctrl+2 | Saúde do PC | Windows e atualizações, discos, estabilidade, antivírus, firewall e BitLocker, relógio e fuso, bateria |
 | Ctrl+3 | Manutenção | Perfis de usuários (com caixas para marcar), limpeza profunda e manutenção completa em um passo |
-| Ctrl+4 | Programas | Lista e desinstala programas, sem janelas quando o fabricante permite |
+| Ctrl+4 | Programas | Lista e desinstala vários programas de uma vez, sem janelas quando o fabricante permite |
 | Ctrl+5 | Contas | Senhas, desbloqueio, ativar/desativar, administradores e senha padrão em lote |
 | Ctrl+6 | Rede | Adaptadores, Wi-Fi, teste de conexão (DNS, internet, portal de login e proxy) e reparo |
 | Ctrl+7 | Inventário | Registra o computador numa planilha única no pendrive |
+| Ctrl+8 | Backup de usuários | Copia a pasta dos usuários para um HD externo ou pendrive (também no boot pelo pendrive) |
 
 ### Saúde do PC
 
@@ -102,6 +104,23 @@ O técnico preenche patrimônio, local (o campo sugere os locais já usados) e o
   **Esquecer rede** apaga uma rede salva (útil quando a senha mudou). No Windows 11 24H2, a leitura do Wi-Fi exige a
   Localização ligada (Configurações > Privacidade e segurança > Localização).
 
+### Programas
+
+A lista mostra os programas instalados (máquina e usuário, 32 e 64 bits), com uma caixa em cada linha; componentes do
+sistema e atualizações ficam ocultos. Nada vem marcado: filtre por nome, fabricante ou versão, marque os que quiser
+(clique na caixa, Espaço ou **Marcar todos**) e clique em **Desinstalar marcados**. Uma confirmação só lista tudo e a
+desinstalação roda um a um, no modo silencioso quando o fabricante permite (MSI, Inno, NSIS ou comando do registro);
+senão, abre a janela do desinstalador.
+
+Antes de cada programa, para evitar o aviso de "aplicativo está aberto", o TI Suite fecha as janelas, encerra os
+processos e para os serviços **daquele** programa — só dentro da pasta de instalação dele, nunca fora nem do Windows.
+No fim, um resumo por programa (Desinstalado / Não desinstalado com o motivo / Cancelado); se algum pedir reinício,
+aparece **Reiniciar agora** (com confirmação, nunca sozinho).
+
+Ficam **fora da desinstalação em lote** (com cadeado e o motivo): runtimes essenciais (Visual C++, .NET, Windows App
+Runtime, WebView2) e antivírus/segurança — estes devem sair pela ferramenta do fabricante. Os dois casos continuam
+podendo ser desinstalados **um a um pelo duplo clique** na linha.
+
 ### Contas
 
 - **Redefinir senha:** digite a senha em "Nova senha" e "Repita a senha"; **Aplicar senha** só libera quando as duas
@@ -118,6 +137,25 @@ O técnico preenche patrimônio, local (o campo sugere os locais já usados) e o
 - Esvazia a Lixeira de todas as contas em todas as unidades fixas (só com o item Lixeira incluído).
 - Em "Itens recentes", apaga só os atalhos recentes, sem mexer no que está fixado no Acesso rápido ou nas listas de atalhos.
 
+### Backup de usuários
+
+Copia **literalmente a pasta do usuário** (`C:\Users\<nome>`) para um HD externo ou pendrive, com o Windows aberto
+(Ctrl+8) ou no boot pelo pendrive (modo recuperação), quando o Windows não inicia.
+
+1. **Origem:** o próprio PC vem escolhido; outro Windows encontrado nos discos também pode ser a origem. No boot, escolha
+   o Windows na tabela. Windows com BitLocker travado não aparece: destrave na área Recuperação e clique em Atualizar.
+2. **Usuários:** tamanho e último uso de cada pasta. Nada vem marcado: marque quem vai ser copiado.
+3. **Destino:** escolha o disco na tabela (livre, tamanho, tipo e sistema de arquivos). O TI Suite avisa quando o destino
+   fica no mesmo disco físico da origem, quando é FAT32 (arquivos de até 4 GB) e quando é o próprio pendrive do TI Suite.
+4. **Fazer backup:** a confirmação mostra os usuários, o tamanho estimado, a pasta e o espaço livre. Se não couber com
+   5% de folga, o backup não começa.
+
+- Cada usuário vai para `<disco>\Backup-TI\<PC>\<usuário>-AAAAMMDD-HHmm\`, com um `LEIA-ME.txt` e o `_robocopy.log`.
+- **Pular temporários e caches** (ligado por padrão): a pasta Temp e o cache do Chrome, Edge e Firefox não são copiados.
+- Pontos de junção nunca são seguidos; nada é apagado nem alterado na origem. Com o Windows aberto, o registro do usuário
+  conectado (NTUSER.DAT) fica de fora, porque fica preso; no boot pelo pendrive, tudo é copiado.
+- Cancelar interrompe a cópia e o `LEIA-ME.txt` daquele usuário avisa que ficou INCOMPLETA.
+
 ## Tabelas
 
 - Clique no cabeçalho para ordenar (tamanhos e datas ordenam pelo valor real).
@@ -128,7 +166,7 @@ O técnico preenche patrimônio, local (o campo sugere os locais já usados) e o
 
 | Tecla | Ação |
 |---|---|
-| Ctrl+1 a Ctrl+7 | Trocar de área |
+| Ctrl+1 a Ctrl+8 | Trocar de área (no modo recuperação, Ctrl+1 e Ctrl+2) |
 | Ctrl+R ou F5 | Atualizar a área aberta |
 | Ctrl+F | Buscar ferramenta (funciona com ou sem acento) |
 | Ctrl+L | Limpar o console |
@@ -171,6 +209,52 @@ logs**. O TI Suite lembra se a janela estava maximizada e a altura do console.
 Por padrão o Windows escala a janela inteira: o layout fica igual em qualquer notebook, com o texto um pouco mais suave.
 Para texto nítido, ligue **Texto nítido em telas com zoom** em Configurações (vale na próxima abertura; pode desalinhar o layout).
 
+## Pendrive de recuperação (boot)
+
+O mesmo pendrive continua funcionando com o Windows aberto (`Iniciar.cmd`) e também **dá boot**: num PC cujo Windows não
+abre, o TI Suite inicia sozinho em **modo recuperação** para reparar o Windows 10/11 do disco e copiar as pastas dos
+usuários. **Nada é reinstalado.**
+
+### Como criar o pendrive
+
+No PC onde fica a pasta de código-fonte (a que tem `dev\`):
+
+1. Instale, da página oficial da Microsoft "Baixar e instalar o Windows ADK", o **Windows ADK** (basta "Ferramentas de
+   Implantação") e o **Complemento do Windows PE**. É gratuito e só precisa ser feito uma vez.
+2. Conecte um pendrive de **16 GB ou mais** (32 GB se for usar a pasta `reparo\`). **Tudo nele será apagado**; os dados
+   de campo que já estiverem nele (inventário, logs, laudos, relatórios, `wifi\`, backups) são guardados e devolvidos.
+3. Abra `Criar-Pendrive.cmd`, aceite o UAC, digite o número do disco do pendrive e depois **APAGAR**. Leva de 10 a 20 min.
+
+O pendrive fica com duas partições: **TI-BOOT** (2 GB, o Windows PE que dá boot; não mexa) e **TI-SUITE** (o resto: o app
+e os dados). O `LEIA-ME-PENDRIVE.txt` da TI-SUITE explica como dar boot (F12, F9, F8 ou Esc conforme o fabricante; o
+Secure Boot pode ficar ligado).
+
+- **Atualizar o app sem formatar:** `Criar-Pendrive.cmd -SomenteAtualizar`.
+- **Testar numa máquina virtual:** `Criar-Pendrive.cmd -SomenteISO` (gera um `.iso`).
+- **PC que recusa o pendrive com Secure Boot ligado:** recrie com `Criar-Pendrive.cmd -Boot2023` (não dá boot em PCs antigos).
+- **SSD não aparece na recuperação** (notebooks Intel com VMD/RST): ponha o driver `.inf` em `dev\drivers\` e recrie.
+- **Pasta `reparo\`** (opcional): o `install.wim`/`install.esd` do ISO oficial da **mesma versão** do Windows serve de
+  fonte para o DISM reparar os arquivos do sistema. Não reinstala nada.
+
+### No modo recuperação
+
+A janela abre maximizada (o Windows PE não tem barra de tarefas) e mostra só **Recuperação** (Ctrl+1) e **Backup**
+(Ctrl+2). Ao fechar, um menu oferece abrir de novo, prompt, reiniciar ou desligar. Como não há Explorer, o botão
+**Logs** abre o console no Bloco de notas e os laudos/relatórios são gravados direto no pendrive, com o caminho num aviso.
+Para conhecer a tela num Windows comum, rode `.\TI-Suite.ps1 -Recovery`.
+
+Escolha o Windows em **Windows encontrados** (o que está em execução nunca é alterado) e comece pelo **Reparo automático**
+(chkdsk, recriar a inicialização, desfazer atualização pendente, SFC e DISM, e laudo). Também há, separados:
+
+- **Reparar inicialização** (bcdboot; o BCD antigo é salvo antes), para o PC que não dá boot nem entra na recuperação do Windows.
+- **Verificar disco** (chkdsk /f, ou /r completo).
+- **Reparar arquivos do sistema** (SFC e DISM offline; com a imagem em `reparo\`, sem internet).
+- **Desfazer atualização** pendente ou recente; **Remover driver** de terceiros; **Modo de segurança** ligar/desligar.
+- **Programas (remoção offline):** remoção forçada do programa que não sai com o PC ligado (apaga a pasta, os atalhos e a
+  entrada na lista). Runtimes e antivírus ficam protegidos.
+- **Destravar BitLocker** com a chave de recuperação de 48 números (nunca gravada).
+- **Backup de usuários** antes de qualquer reparo, principalmente se o disco mostrar sinais de falha.
+
 ## Distribuição e integridade
 
 Para gerar o pacote de distribuição, rode no Windows PowerShell:
@@ -197,11 +281,15 @@ config.json               preferências (sem senhas)
 bin\                      DLL dos controles, gerada pelo build
 src\Core\Controls.cs      controles visuais (C#)
 src\Core\00-05*.ps1       tema, diálogos, console, tarefas em segundo plano e janela principal
+src\Core\06-Windows.ps1   Windows instalado no disco (recuperação e backup)
 src\Workspaces\*.ps1      uma área por arquivo
+Criar-Pendrive.cmd        cria o pendrive de recuperação (só na pasta de código-fonte)
 inventario\               planilha do inventário e cópias de segurança (modo portátil)
 logs\                     auditoria, consoles salvos e erros (modo portátil)
 laudos\                   laudos da Saúde do PC (modo portátil)
 relatorios\               relatórios do Início (modo portátil)
 wifi\                     perfis de Wi-Fi para importar (você cria; nunca vai para o pacote)
-dev\                      build (Build-Release.ps1) e testes das regras (Test-Logic.ps1)
+reparo\                   imagem do Windows para o DISM reparar (opcional; você cria)
+Backup-TI\                backups de usuários
+dev\                      build, criador do pendrive e testes das regras
 ```

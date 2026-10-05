@@ -29,9 +29,12 @@ function Emit { param([string]$Text, [string]$Level = 'Info', [int]$Progress = -
 function Get-SrcPath { param([string]$Dir, [string]$File) Join-Path (Join-Path (Join-Path $root 'src') $Dir) $File }
 
 . (Get-SrcPath 'Core' '04-Async.ps1')
+. (Get-SrcPath 'Core' '06-Windows.ps1')
 . (Get-SrcPath 'Workspaces' 'Saude.ps1')
 . (Get-SrcPath 'Workspaces' 'Inventario.ps1')
 . (Get-SrcPath 'Workspaces' 'Limpeza.ps1')
+. (Get-SrcPath 'Workspaces' 'Recuperacao.ps1')
+. (Get-SrcPath 'Workspaces' 'Backup.ps1')
 . ([scriptblock]::Create($global:TIWorkerLib))
 
 function Get-Row { param($Rows, [string]$Label) return (@($Rows | Where-Object { $_.Label -eq $Label }) | Select-Object -First 1) }
@@ -425,6 +428,411 @@ $laudo = New-SaudeLaudoText -Report $fakeRep -StatusText @{ windows = 'Crítico'
 Assert-True  'laudo: patrimônio do inventário' ($laudo -match 'Patrimônio\s+: 000123')
 Assert-True  'laudo: linha crítica marcada' ($laudo -match '\[X\] Última atualização')
 Assert-True  'laudo: desktop "Não se aplica"' ($laudo -match 'Bateria \(Não se aplica\)')
+
+
+# ===== testes propostos para dev\Test-Logic.ps1 (seção Backup) =====
+# --- Backup de usuários: nomes e pastas ----------------------------------------
+Assert-Equal 'backup: nome sem caracteres proibidos' (ConvertTo-TIBackupName 'a\b/c:d*e?f"g<h>i|j') 'a_b_c_d_e_f_g_h_i_j'
+Assert-Equal 'backup: nome sem ponto e espaço no fim' (ConvertTo-TIBackupName '  joao. . ') 'joao'
+Assert-Equal 'backup: nome vazio' (ConvertTo-TIBackupName '' -Fallback 'usuario') 'usuario'
+Assert-Equal 'backup: nome reservado do Windows' (ConvertTo-TIBackupName 'CON') '_CON'
+Assert-Equal 'backup: nome reservado com extensão' (ConvertTo-TIBackupName 'com1.txt') '_com1.txt'
+Assert-Equal 'backup: nome comum com "con" no meio fica' (ConvertTo-TIBackupName 'conta') 'conta'
+Assert-Equal 'backup: nome longo cortado' (ConvertTo-TIBackupName ('x' * 80)).Length 60
+Assert-Equal 'backup: pasta base' (Get-TIBackupBase -DestRoot 'E:\' -Computer 'PC01') 'E:\Backup-TI\PC01'
+Assert-Equal 'backup: pasta base com letra só' (Get-TIBackupBase -DestRoot 'E' -Computer 'LAB:01') 'E:\Backup-TI\LAB_01'
+$d = Get-Date -Year 2026 -Month 10 -Day 5 -Hour 14 -Minute 30 -Second 12
+Assert-Equal 'backup: pasta do usuário' (Get-TIBackupFolder -DestRoot 'E:\' -Computer 'PC01' -User 'joao' -Date $d) 'E:\Backup-TI\PC01\joao-20261005-1430'
+Assert-Equal 'backup: pasta do usuário, segunda no mesmo minuto' (Get-TIBackupFolder -DestRoot 'E:\' -Computer 'PC01' -User 'joao' -Date $d -Attempt 2) 'E:\Backup-TI\PC01\joao-20261005-1430-2'
+Assert-Equal 'backup: pasta com nome sanitizado' (Get-TIBackupFolder -DestRoot 'E:\' -Computer 'PC 01' -User 'ana|maria' -Date $d) 'E:\Backup-TI\PC 01\ana_maria-20261005-1430'
+Assert-Equal 'backup: auditoria' (Get-TIBackupAuditDetail -Names @('a', 'b') -Base 'E:\Backup-TI\PC01') 'Usuários: a, b -> E:\Backup-TI\PC01'
+Assert-Equal 'backup: auditoria longa' (Get-TIBackupAuditDetail -Names @('a', 'b', 'c') -Base 'E:\X' -Max 2) 'Usuários: a, b e mais 1 -> E:\X'
+
+# --- Backup: espaço e estimativa --------------------------------------------------
+Assert-True  'backup: cabe com 5% de folga' (Test-TIBackupSpace -Needed 100GB -Free 105GB).Ok
+Assert-True  'backup: não cabe sem a folga' (-not (Test-TIBackupSpace -Needed 100GB -Free 104GB).Ok)
+Assert-Equal 'backup: quanto falta' ([Math]::Round((Test-TIBackupSpace -Needed 100GB -Free 104GB).Missing / 1GB, 2)) 1
+Assert-True  'backup: livre desconhecido bloqueia' (-not (Test-TIBackupSpace -Needed 1MB -Free -1).Ok)
+Assert-True  'backup: livre nulo é desconhecido' (-not (Test-TIBackupSpace -Needed 1MB -Free $null).Known)
+Assert-True  'backup: nada para copiar cabe' (Test-TIBackupSpace -Needed 0 -Free 0).Ok
+$us = @([pscustomobject]@{ Size = 10GB; CacheSize = 2GB }, [pscustomobject]@{ Size = 1GB; CacheSize = 0 }, [pscustomobject]@{ Size = -1 })
+Assert-Equal 'backup: estimativa sem caches' ((Get-TIBackupEstimate -Items $us -SkipCache $true) / 1GB) 9
+Assert-Equal 'backup: estimativa com caches' ((Get-TIBackupEstimate -Items $us -SkipCache $false) / 1GB) 11
+
+# --- Backup: robocopy --------------------------------------------------------------
+$ra = @(Get-TIBackupRobocopyArgs -Source 'C:\Users\joao' -Dest 'E:\Backup-TI\PC01\joao-20261005-1430' -LogPath 'E:\Backup-TI\PC01\joao-20261005-1430\_robocopy.log' -IsAdmin $true)
+Assert-Equal 'backup: linha do robocopy (admin)' (Join-TIBackupArgs $ra) '"C:\Users\joao" "E:\Backup-TI\PC01\joao-20261005-1430" /E /COPY:DAT /DCOPY:DAT /XJ /R:1 /W:1 /MT:8 /NP /NFL /NDL /BYTES /ZB /UNILOG+:"E:\Backup-TI\PC01\joao-20261005-1430\_robocopy.log"'
+$ra2 = @(Get-TIBackupRobocopyArgs -Source 'C:\Users\joao\' -Dest 'E:\B' -LogPath 'E:\B\_robocopy.log' -IsAdmin $false -ExcludeDirs @('C:\Users\joao\AppData\Local\Temp', 'C:\Users\joao\AppData\Local\Google\Chrome\User Data\Default\Code Cache') -ExcludeFiles @('NTUSER.DAT*', 'UsrClass.dat*'))
+Assert-True  'backup: /XJ sempre' ($ra2 -contains '/XJ')
+Assert-True  'backup: sem /ZB sem administrador' ($ra2 -notcontains '/ZB')
+Assert-Equal 'backup: origem sem barra no fim' $ra2[0] 'C:\Users\joao'
+Assert-Equal 'backup: /XD com caminho com espaço' (Join-TIBackupArgs $ra2) '"C:\Users\joao" "E:\B" /E /COPY:DAT /DCOPY:DAT /XJ /R:1 /W:1 /MT:8 /NP /NFL /NDL /BYTES /XD "C:\Users\joao\AppData\Local\Temp" "C:\Users\joao\AppData\Local\Google\Chrome\User Data\Default\Code Cache" /XF "NTUSER.DAT*" "UsrClass.dat*" /UNILOG+:"E:\B\_robocopy.log"'
+Assert-Equal 'backup: aspas com barra no fim' (ConvertTo-TIBackupArg 'E:\' -Force) '"E:\\"'
+Assert-Equal 'backup: argumento simples sem aspas' (ConvertTo-TIBackupArg '/MT:8') '/MT:8'
+Assert-Equal 'backup: aspas internas' (ConvertTo-TIBackupArg 'a "b"') '"a \"b\""'
+Assert-Equal 'backup: código sem o extra do próprio log' (Get-TIBackupEffectiveCode 3) 1
+Assert-Equal 'backup: código 2 vira 0' (Get-TIBackupEffectiveCode 2) 0
+Assert-Equal 'backup: falha continua falha' (Get-TIBackupEffectiveCode 11) 9
+Assert-Equal 'backup: erro grave continua' (Get-TIBackupEffectiveCode 16) 16
+Assert-Equal 'backup: situação com falhas' (Get-TIBackupStatus -Code 9).Level 'Error'
+Assert-Equal 'backup: situação ok' (Get-TIBackupStatus -Code 1).Word 'Concluído'
+Assert-Equal 'backup: situação interrompida' (Get-TIBackupStatus -Code -1 -Interrupted $true).Word 'Interrompido'
+Assert-Equal 'backup: percentual' (Get-TIBackupPercent -Done 50 -Total 200) 25
+Assert-Equal 'backup: percentual não chega a 100 antes do fim' (Get-TIBackupPercent -Done 500 -Total 200) 99
+Assert-Equal 'backup: percentual sem total' (Get-TIBackupPercent -Done 5 -Total 0) 0
+Assert-Equal 'backup: duração curta' (Format-TIBackupDuration 42) '42 s'
+Assert-Equal 'backup: duração em minutos' (Format-TIBackupDuration 185) '3 min 05 s'
+Assert-Equal 'backup: duração em horas' (Format-TIBackupDuration 3725) '1 h 02 min'
+
+# --- Backup: temporários e caches (/XD) ----------------------------------------------
+$cd = @(Get-TIBackupCacheDirs -UserPath 'C:\Users\joao\' -ChromeProfiles @('Default', 'Profile 1', 'Crashpad') -FirefoxProfiles @('ab12.default-release'))
+Assert-True  'caches: Temp' ($cd -contains 'C:\Users\joao\AppData\Local\Temp')
+Assert-True  'caches: INetCache' ($cd -contains 'C:\Users\joao\AppData\Local\Microsoft\Windows\INetCache')
+Assert-True  'caches: Chrome Profile 1 Code Cache' ($cd -contains 'C:\Users\joao\AppData\Local\Google\Chrome\User Data\Profile 1\Code Cache')
+Assert-True  'caches: Chrome GPUCache' ($cd -contains 'C:\Users\joao\AppData\Local\Google\Chrome\User Data\Default\GPUCache')
+Assert-True  'caches: pasta que não é perfil fica de fora' (-not ($cd -like '*Crashpad*'))
+Assert-True  'caches: Edge sem perfil, nada do Edge' (-not ($cd -like '*\Edge\*'))
+Assert-True  'caches: Firefox cache2' ($cd -contains 'C:\Users\joao\AppData\Local\Mozilla\Firefox\Profiles\ab12.default-release\cache2')
+Assert-True  'caches: nunca só o nome' (@($cd | Where-Object { $_ -notlike 'C:\Users\joao\*' }).Count -eq 0)
+Assert-Equal 'caches: quantidade' $cd.Count 14
+
+# --- Backup: resumo e erros do log do robocopy ---------------------------------------------
+$logEn = @"
+-------------------------------------------------------------------------------
+   ROBOCOPY     ::     Robust File Copy for Windows
+-------------------------------------------------------------------------------
+
+  Started : Monday, October 5, 2026 2:30:01 PM
+   Source : C:\Users\joao\
+     Dest : E:\Backup-TI\PC01\joao-20261005-1430\
+
+2026/10/05 14:31:02 ERROR 32 (0x00000020) Copying File C:\Users\joao\Documents\a.pst
+The process cannot access the file because it is being used by another process.
+Waiting 1 seconds... Retrying...
+2026/10/05 14:31:03 ERROR 32 (0x00000020) Copying File C:\Users\joao\Documents\a.pst
+The process cannot access the file because it is being used by another process.
+
+ERROR: RETRY LIMIT EXCEEDED.
+
+------------------------------------------------------------------------------
+
+               Total    Copied   Skipped  Mismatch    FAILED    Extras
+    Dirs :       120       119         1         0         0         0
+   Files :      4521      4519         1         0         1         1
+   Bytes : 987654321 987000000    654321         0         0       512
+   Times :   0:02:01   0:01:58                       0:00:00   0:00:02
+   Ended : Monday, October 5, 2026 2:32:02 PM
+"@
+$s1 = ConvertFrom-TIBackupRobocopySummary -Text $logEn
+Assert-True  'log en: resumo achado' $s1.Found
+Assert-Equal 'log en: arquivos copiados' $s1.FilesCopied 4519
+Assert-Equal 'log en: arquivos com falha' $s1.FilesFailed 1
+Assert-Equal 'log en: bytes copiados' $s1.BytesCopied 987000000
+Assert-Equal 'log en: total de arquivos' $s1.FilesTotal 4521
+$e1 = Get-TIBackupRobocopyErrors -Text $logEn
+Assert-Equal 'log en: erro repetido conta uma vez' $e1.Count 1
+Assert-True  'log en: erro com a mensagem' ($e1.Lines[0] -match '^ERROR 32 .*a\.pst - The process cannot')
+$logPt = @"
+  Iniciado : segunda-feira, 5 de outubro de 2026 14:30:01
+     Origem : C:\Users\maria\
+
+                Total   Copiado  Ignorado Incompatibilidade     FALHA    Extras
+ Diretórios :        10        10         0         0         0         0
+   Arquivos :       100        97         0         0         3         0
+      Bytes :   5000000   4900000         0         0    100000         0
+     Tempos :   0:00:10   0:00:09                       0:00:00   0:00:00
+   Término : segunda-feira, 5 de outubro de 2026 14:30:11
+"@
+$s2 = ConvertFrom-TIBackupRobocopySummary -Text $logPt
+Assert-Equal 'log pt: arquivos copiados' $s2.FilesCopied 97
+Assert-Equal 'log pt: falhas' $s2.FilesFailed 3
+Assert-Equal 'log pt: bytes' $s2.BytesCopied 4900000
+Assert-True  'log sem resumo' (-not (ConvertFrom-TIBackupRobocopySummary -Text 'ERRO: parâmetro inválido').Found)
+$s3 = ConvertFrom-TIBackupRobocopySummary -Text ($logPt -replace '   5000000   4900000         0         0    100000         0', '   4.7 m   4.6 m   0   0   97.6 k   0')
+Assert-True  'log sem /BYTES: arquivos ainda lidos' ($s3.Found -and $s3.FilesCopied -eq 97)
+Assert-Equal 'log sem /BYTES: bytes desconhecidos' $s3.BytesCopied -1
+
+# --- Backup: destino --------------------------------------------------------------------
+$v1 = ConvertTo-TIBackupVolume ([pscustomobject]@{ Drive = 'E:'; Label = 'BACKUP'; FileSystem = 'NTFS'; SizeBytes = 1TB; FreeBytes = 500GB; Type = 'USB'; IsTiSuite = $false })
+Assert-Equal 'volume: raiz' $v1.Root 'E:\'
+Assert-Equal 'volume: livre' ($v1.Free / 1GB) 500
+Assert-Equal 'volume: disco desconhecido' $v1.DiskNumber -1
+$v2 = ConvertTo-TIBackupVolume @{ Letter = 'f'; Free = 0; Size = 32GB; IsTiSuite = $true; DiskNumber = 0 }
+Assert-Equal 'volume: letra sozinha' $v2.Drive 'F:'
+Assert-Equal 'volume: livre zero é conhecido' $v2.Free 0
+Assert-True  'volume: pendrive do TI Suite' $v2.IsTiSuite
+Assert-Equal 'volume: disco 0' $v2.DiskNumber 0
+Assert-Equal 'volume: livre desconhecido' (ConvertTo-TIBackupVolume ([pscustomobject]@{ Root = 'Z:\' })).Free -1
+$n1 = @(Get-TIBackupDestNotes -Dest ([pscustomobject]@{ DiskNumber = 0; FileSystem = 'FAT32'; Type = 'Interno'; IsTiSuite = $false }) -SourceDisk 0)
+Assert-Equal 'destino: mesmo disco e FAT32' (@($n1 | ForEach-Object { $_.Kind }) -join ',') 'samedisk,fat'
+Assert-Equal 'destino: exFAT não avisa' @(Get-TIBackupDestNotes -Dest ([pscustomobject]@{ DiskNumber = 1; FileSystem = 'exFAT'; Type = 'USB' }) -SourceDisk 0).Count 0
+Assert-Equal 'destino: disco desconhecido não avisa' @(Get-TIBackupDestNotes -Dest ([pscustomobject]@{ DiskNumber = -1; FileSystem = 'NTFS' }) -SourceDisk -1).Count 0
+
+# --- Backup: LEIA-ME ------------------------------------------------------------------------
+$rm = Get-TIBackupReadme -Info ([pscustomobject]@{
+    Version = '1.5.0'; Status = 'COMPLETO'; Computer = 'PC01'; Windows = 'Windows 11 Pro 24H2 (26100.2033)'
+    User = 'joao'; Account = 'ESCOLA\joao'; Source = 'C:\Users\joao'; Folder = 'E:\Backup-TI\PC01\joao-20261005-1430'
+    Start = $d; End = $d.AddSeconds(185); Seconds = 185; Bytes = 1GB; Files = 4519; FilesTotal = 4521; Failed = 1
+    Code = 9; CodeRaw = 11; CodeText = 'falhas'; CacheSkipped = $true; HivesSkipped = $true; Interrupted = $false })
+Assert-True  'leia-me: usuário e conta' ($rm -match 'Usuário:\s+joao \(ESCOLA\\joao\)')
+Assert-True  'leia-me: situação' ($rm -match 'Situação:\s+COMPLETO')
+Assert-True  'leia-me: código e original' ($rm -match 'Robocopy:\s+código 9 - falhas \(no log, código 11')
+Assert-True  'leia-me: arquivos' ($rm -match 'Arquivos copiados:\s+4519 de 4521')
+Assert-True  'leia-me: hives avisados' ($rm -match 'NTUSER\.DAT')
+Assert-True  'leia-me: caches avisados' ($rm -match 'Temporários e caches')
+Assert-True  'leia-me: falhas apontam o log' ($rm -match '_robocopy\.log')
+Assert-True  'leia-me: duração' ($rm -match '\(3 min 05 s\)')
+Assert-True  'leia-me: CRLF' ($rm -match "`r`n" -and $rm -notmatch "[^`r]`n")
+$rm2 = Get-TIBackupReadme -Info ([pscustomobject]@{ Version = '1.5.0'; Status = 'INCOMPLETO'; User = 'maria'; Start = $d; End = $d; Seconds = 3; Bytes = 10MB; Interrupted = $true })
+Assert-True  'leia-me interrompido: aviso' ($rm2 -match 'interrompida' -and $rm2 -notmatch 'Arquivos com falha')
+$rm3 = Get-TIBackupReadme -Info ([pscustomobject]@{ Version = '1.5.0'; Status = 'COMPLETO'; User = 'a'; Start = $d; End = $d; Seconds = 1; Bytes = 1; Files = 1; FilesTotal = 1; Failed = 0; Code = 1; CodeRaw = 3; CodeText = (Get-TIRobocopyResult -ExitCode 1).Text })
+Assert-True  'leia-me: código do robocopy sem repetir' ($rm3 -match 'Robocopy:\s+Cópia concluída \(código 1\)' -and $rm3 -match 'no log, código 3')
+
+# --- Windows no disco (06-Windows.ps1): rótulo, robocopy, caminhos offline --------
+Assert-Equal 'win: 11 pelo build (registro diz 10)' (Get-TIWindowsLabel -ProductName 'Windows 10 Pro' -EditionId 'Professional' -Build 26100 -Ubr 2033 -DisplayVersion '24H2') 'Windows 11 Pro 24H2 (26100.2033)'
+Assert-Equal 'win: 10 antigo usa ReleaseId' (Get-TIWindowsLabel -ProductName 'Windows 10 Home' -EditionId 'Core' -Build 18363 -Ubr 1556 -ReleaseId '1909') 'Windows 10 Home 1909 (18363.1556)'
+Assert-Equal 'win: edição pelo nome do produto' (Get-TIWindowsLabel -ProductName 'Windows 10 Education' -Build 19045 -DisplayVersion '22H2') 'Windows 10 Education 22H2 (19045)'
+Assert-Equal 'win: LTSC' (Get-TIWindowsLabel -ProductName 'Windows 10 Enterprise LTSC 2019' -EditionId 'EnterpriseS' -Build 17763 -Ubr 1 -ReleaseId '1809') 'Windows 10 Enterprise LTSC 1809 (17763.1)'
+Assert-Equal 'win: servidor fica como está' (Get-TIWindowsLabel -ProductName 'Windows Server 2019 Standard' -EditionId 'ServerStandard' -Build 17763) 'Windows Server 2019 Standard (17763)'
+Assert-Equal 'win: sem dados' (Get-TIWindowsLabel) 'Windows'
+Assert-Equal 'robocopy 0: nada novo' (Get-TIRobocopyResult 0).Level 'Success'
+Assert-Equal 'robocopy 3: extras no destino é sucesso' (Get-TIRobocopyResult 3).Ok $true
+Assert-Equal 'robocopy 5: diferenças' (Get-TIRobocopyResult 5).Level 'Warn'
+Assert-Equal 'robocopy 8: falha' (Get-TIRobocopyResult 8).Ok $false
+Assert-Equal 'robocopy 16: erro grave' (Get-TIRobocopyResult 16).Level 'Error'
+Assert-Equal 'robocopy -1: não terminou' (Get-TIRobocopyResult -1).Ok $false
+Assert-Equal 'offline: %SystemDrive%' (Resolve-TIOfflinePath -Path '%SystemDrive%\Users\ana' -Drive 'D:') 'D:\Users\ana'
+Assert-Equal 'offline: C: vira a letra da instalação' (Resolve-TIOfflinePath -Path 'C:\Users\ana' -Drive 'D:') 'D:\Users\ana'
+Assert-Equal 'offline: %ProgramFiles(x86)%' (Resolve-TIOfflinePath -Path '"%ProgramFiles(x86)%\App"' -Drive 'E') 'E:\Program Files (x86)\App'
+Assert-Equal 'firmware: PEFirmwareType 2' (ConvertTo-TIFirmwareType -PEFirmwareType 2) 'UEFI'
+Assert-Equal 'firmware: %firmware_type% Legacy' (ConvertTo-TIFirmwareType -EnvFirmware 'Legacy') 'BIOS'
+Assert-Equal 'firmware: winload.efi' (ConvertTo-TIFirmwareType -BcdText 'path  \WINDOWS\system32\winload.efi') 'UEFI'
+Assert-Equal 'usuários: Público fica de fora' (Test-TIUserFolderExcluded -Name 'Public') $true
+Assert-Equal 'usuários: defaultuser0 fica de fora' (Test-TIUserFolderExcluded -Name 'defaultuser0') $true
+Assert-Equal 'usuários: SID do sistema fica de fora' (Test-TIUserFolderExcluded -Name 'x' -Sid 'S-1-5-18') $true
+Assert-Equal 'usuários: conta comum entra' (Test-TIUserFolderExcluded -Name 'ana' -Sid 'S-1-5-21-1-2-3-1001') $false
+
+# --- Programas offline (06-Windows.ps1) ---------------------------------------------
+Assert-Equal 'prog: pasta pelo ícone' (Get-TIProgramFolder -DisplayIcon 'C:\Program Files\Notepad++\notepad++.exe' -Drive 'D:').Folder 'D:\Program Files\Notepad++'
+Assert-Equal 'prog: msiexec não dá pasta' (Get-TIProgramFolder -UninstallString 'MsiExec.exe /X{ABC}' -DisplayIcon 'C:\Windows\Installer\{ABC}\i.exe' -Drive 'D:').Folder ''
+Assert-Equal 'prog: comando com espaço sem aspas' (Get-TIExePathFromCommand 'C:\Program Files\App X\uninst.exe /S') 'C:\Program Files\App X\uninst.exe'
+Assert-Equal 'prog: VC++ protegido' (Get-TIProgramProtection 'Microsoft Visual C++ 2015-2022 Redistributable (x64) - 14.38.33130') 'runtime essencial (Visual C++)'
+Assert-Equal 'prog: .NET protegido' (Get-TIProgramProtection 'Microsoft .NET Runtime - 8.0.1 (x64)') 'runtime essencial (.NET)'
+Assert-Equal 'prog: Paint.NET não é .NET' (Get-TIProgramProtection 'paint.net') ''
+Assert-Equal 'prog: WebView2 protegido' (Get-TIProgramProtection 'Microsoft Edge WebView2 Runtime') 'runtime essencial (WebView2)'
+Assert-True  'prog: antivírus pelo editor' ([bool](Get-TIProgramProtection 'Free Antivirus' 'Avast Software'))
+Assert-Equal 'prog: "reset" não é ESET' (Get-TIProgramProtection 'Reset Tool' 'Acme') ''
+$e = ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'VLC media player'; DisplayVersion = '3.0.20'; Publisher = 'VideoLAN'; InstallLocation = 'C:\Program Files\VideoLAN\VLC' } -KeyName 'VLC media player' -Drive 'D:'
+Assert-Equal 'prog: entrada lida' ('{0}|{1}|{2}' -f $e.Name, $e.Version, $e.Folder) 'VLC media player|3.0.20|D:\Program Files\VideoLAN\VLC'
+Assert-True  'prog: componente do sistema some' ($null -eq (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'X'; SystemComponent = 1 }))
+Assert-True  'prog: atualização some' ($null -eq (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'Security Update for Microsoft Office (KB123456)' }))
+Assert-Equal 'prog: código MSI' (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'App'; WindowsInstaller = 1 } -KeyName '{12345678-90ab-CDEF-1234-567890ABCDEF}').ProductCode '{12345678-90AB-CDEF-1234-567890ABCDEF}'
+Assert-Equal 'prog: GUID empacotado' (ConvertTo-TIPackedGuid '{12345678-90AB-CDEF-1234-567890ABCDEF}') '87654321BA09FEDC2143658709BADCFE'
+Assert-Equal 'prog: pasta apagável' (Test-TIRemovableProgramFolder -Folder 'D:\Program Files\VideoLAN\VLC' -Root 'D:\') ''
+Assert-Equal 'prog: raiz de Program Files nunca' (Test-TIRemovableProgramFolder -Folder 'D:\Program Files' -Root 'D:\') 'pasta raiz'
+Assert-Equal 'prog: Common Files nunca' (Test-TIRemovableProgramFolder -Folder 'D:\Program Files\Common Files\Vendor' -Root 'D:\') 'pasta do Windows ou compartilhada'
+Assert-Equal 'prog: ProgramData\Microsoft nunca' (Test-TIRemovableProgramFolder -Folder 'D:\ProgramData\Microsoft\Windows' -Root 'D:\') 'pasta do Windows ou compartilhada'
+Assert-Equal 'prog: Windows nunca' (Test-TIRemovableProgramFolder -Folder 'D:\Windows\System32' -Root 'D:\') 'fora das pastas de programas'
+Assert-Equal 'prog: ..\ no caminho' (Test-TIRemovableProgramFolder -Folder 'D:\Program Files\X\..\..\Windows' -Root 'D:\') 'caminho inválido'
+Assert-Equal 'prog: AppData\Local\Programs do usuário' (Test-TIRemovableProgramFolder -Folder 'D:\Users\ana\AppData\Local\Programs\App' -Root 'D:\') ''
+Assert-Equal 'prog: outra unidade' (Test-TIRemovableProgramFolder -Folder 'E:\Program Files\X' -Root 'D:\') 'pasta fora da unidade do Windows'
+Assert-Equal 'prog: pasta compartilhada (contém)' (Test-TIFolderShared -Folder 'D:\Program Files\A' -Others @('D:\Program Files\A\B')) $true
+Assert-Equal 'prog: pasta com prefixo parecido não é compartilhada' (Test-TIFolderShared -Folder 'D:\Program Files\A' -Others @('D:\Program Files\AB')) $false
+$lnk = New-Object byte[] 200
+$u = [Text.Encoding]::Unicode.GetBytes('C:\Program Files\VideoLAN\VLC\vlc.exe'); [Array]::Copy($u, 0, $lnk, 81, $u.Length)
+Assert-Equal 'prog: atalho aponta para a pasta (outra letra)' (Test-TILnkPointsTo -Bytes $lnk -Folder 'D:\Program Files\VideoLAN\VLC') $true
+Assert-Equal 'prog: atalho de outra pasta' (Test-TILnkPointsTo -Bytes $lnk -Folder 'D:\Program Files\VideoLAN\VL') $false
+
+# --- Recuperação (Recuperacao.ps1) -----------------------------------------------------
+$okKey = (@(11, 22, 720885, 11000, 55000, 135795, 440000, 77) | ForEach-Object { '{0:000000}' -f $_ }) -join '-'
+Assert-Equal 'bitlocker: chave com hífens' (Get-TIRecoveryKeyError $okKey) ''
+Assert-Equal 'bitlocker: chave sem hífens' (ConvertTo-TIRecoveryKey ($okKey -replace '-', '')) $okKey
+Assert-Equal 'bitlocker: chave com espaços' (ConvertTo-TIRecoveryKey ($okKey -replace '-', ' ')) $okKey
+Assert-Equal 'bitlocker: poucos números' (Get-TIRecoveryKeyError '123') 'A chave tem 48 números; foram digitados 3.'
+Assert-Equal 'bitlocker: grupo que não é múltiplo de 11' (Get-TIRecoveryKeyError ('000012' + $okKey.Substring(6))) 'O grupo 1 não confere: confira a digitação.'
+Assert-True  'bitlocker: letra na chave' ([bool](Get-TIRecoveryKeyError ($okKey -replace '1', 'a')))
+Assert-Equal 'bitlocker: inválida não normaliza' (ConvertTo-TIRecoveryKey 'abc') ''
+Assert-Equal 'laudo: nome' (Get-TIRecoveryLaudoName -Computer 'LAB-01' -When ([datetime]'2026-10-05 14:30')) 'recuperacao-LAB-01-20261005-1430.txt'
+Assert-Equal 'laudo: nome do PC limpo' (Get-TIRecoveryLaudoName -Computer ' PC/2: x ' -When ([datetime]'2026-01-02 03:04')) 'recuperacao-PC_2_x-20260102-0304.txt'
+Assert-Equal 'chkdsk 0' (Get-TIChkdskResult 0).Level 'Success'
+Assert-Equal 'chkdsk 1: corrigido' (Get-TIChkdskResult 1).Ok $true
+Assert-Equal 'chkdsk 3: para o reparo automático' (Get-TIChkdskResult 3).Stop $true
+Assert-Equal 'chkdsk -1: não terminou' (Get-TIChkdskResult -1).Level 'Error'
+Assert-Equal 'sfc: sem violações (pt)' (Get-TISfcResult 0 'A Proteção de Recursos do Windows não encontrou nenhuma violação de integridade.').Kind 'clean'
+Assert-Equal 'sfc: não corrigiu alguns' (Get-TISfcResult 0 'A Proteção de Recursos do Windows encontrou arquivos corrompidos, mas não pôde corrigir alguns deles.').Kind 'partial'
+Assert-Equal 'sfc: reparou (en)' (Get-TISfcResult 0 'Windows Resource Protection found corrupt files and successfully repaired them.').Kind 'repaired'
+Assert-Equal 'sfc: reparo pendente' (Get-TISfcResult 0 'Há um reparo do sistema pendente que exige reinicialização para ser concluído.').Kind 'pending'
+Assert-Equal 'dism: repositório reparável' (Get-TIDismResult 0 'The component store is repairable.').Kind 'repairable'
+Assert-Equal 'dism: não reparável' (Get-TIDismResult 0 'The component store cannot be repaired.').Ok $false
+Assert-True  'dism: 0x800f081f explicado' ((Get-TIDismCodeText -2146498529) -match 'mesma versão')
+Assert-Equal 'dism: erro 87' (Get-TIDismCodeText 87) 'Falha do DISM (erro 87): opção não reconhecida para esta versão do Windows.'
+Assert-Equal 'dism: 0x80070070 vira erro 112' (Get-TIDismCodeText -2147024784) 'Falha do DISM (erro 112): sem espaço em disco: libere espaço no disco do Windows.'
+Assert-Equal 'bcdboot: GPT é UEFI' (Get-TIBcdbootTarget -Firmware 'BIOS' -PartitionStyle 'GPT') 'UEFI'
+Assert-Equal 'bcdboot: MBR + BIOS' (Get-TIBcdbootTarget -Firmware 'BIOS' -PartitionStyle 'MBR') 'BIOS'
+Assert-Equal 'bcdboot: MBR + UEFI = ALL' (Get-TIBcdbootTarget -Firmware 'UEFI' -PartitionStyle 'MBR') 'ALL'
+Assert-Equal 'bcdboot: argumentos' (Get-TIBcdbootArgs -WinDir 'D:\Windows\' -Letter 's' -Target 'uefi' -Locale 'pt-BR') '"D:\Windows" /s S: /f UEFI /l pt-BR'
+Assert-Equal 'bcd: caminhos do BCD (ALL)' ((Get-TIBcdStorePaths -Letter 'S' -Target 'ALL') -join '|') 'S:\EFI\Microsoft\Boot\BCD|S:\Boot\BCD'
+$bcdTxt = "Windows Boot Loader`r`n-------------------`r`nidentificador           {11111111-2222-3333-4444-555555555555}`r`ndevice                  partition=C:`r`n`r`nWindows Boot Loader`r`n-------------------`r`nidentificador           {66666666-2222-3333-4444-555555555555}`r`ndevice                  partition=D:`r`nresumeobject            {bbbbbbbb-2222-3333-4444-555555555555}`r`nsafeboot                Minimal`r`n"
+Assert-Equal 'bcd: entrada do Windows em D:' (Get-TIBcdLoaderInfo -Text $bcdTxt -Drive 'D:').Id '{66666666-2222-3333-4444-555555555555}'
+Assert-Equal 'bcd: modo de segurança ligado' (Get-TIBcdLoaderInfo -Text $bcdTxt -Drive 'D:').SafeBoot 'Minimal'
+Assert-Equal 'bcd: unidade sem entrada' (Get-TIBcdLoaderInfo -Text $bcdTxt -Drive 'E:').Id ''
+Assert-Equal 'letra livre para a partição do sistema' (Select-TIFreeDriveLetter -Used @('C:', 'D:', 'S', 'X:')) 'R:'
+$imgs = @([pscustomobject]@{ Path = 'E:\reparo\install.esd'; Index = 6; EditionId = 'Professional'; Build = 19045; Arch = 'x64' },
+          [pscustomobject]@{ Path = 'E:\reparo\install.wim'; Index = 1; EditionId = 'Core'; Build = 19045; Arch = 'x64' },
+          [pscustomobject]@{ Path = 'E:\reparo\w10b.wim'; Index = 3; EditionId = 'Professional'; Build = 19044; Arch = 'x64' })
+Assert-Equal 'reparo: mesma versão e edição' (Select-TIRepairImage -Images $imgs -Build 19045 -EditionId 'Professional' -Arch 'x64').Path 'E:\reparo\install.esd'
+Assert-Equal 'reparo: mesma base (19044 x 19045)' (Select-TIRepairImage -Images $imgs[1..2] -Build 19045 -EditionId 'Professional').Index 3
+Assert-True  'reparo: outra edição não serve' ($null -eq (Select-TIRepairImage -Images $imgs -Build 19045 -EditionId 'Education'))
+Assert-True  'reparo: outra versão não serve' ($null -eq (Select-TIRepairImage -Images $imgs -Build 22631 -EditionId 'Professional'))
+Assert-Equal 'reparo: argumento /Source' (Get-TIDismSourceArg -Path 'E:\reparo\install.esd' -Index 6) '/Source:ESD:E:\reparo\install.esd:6'
+Assert-Equal 'pacote: KB' (Get-TIPackageDisplayName 'Package_for_KB5034441~31bf3856ad364e35~amd64~~19041.3920.1.1') 'KB5034441'
+Assert-Equal 'pacote: cumulativa' (Get-TIPackageDisplayName 'Package_for_RollupFix~31bf3856ad364e35~amd64~~19041.4046.1.6') 'Atualização cumulativa (19041.4046)'
+Assert-Equal 'disco: erro de leitura é falha' (Get-TIRecoveryDiskVerdict -Health 'Healthy' -Uncorrected 3).Tone 'crit'
+Assert-Equal 'disco: NVMe a 60 °C em ordem' (Get-TIRecoveryDiskVerdict -Health 'Healthy' -Temp 60 -Media 'SSD NVMe').Tone 'ok'
+Assert-Equal 'saída: sfc em UTF-16' (Get-TIOutputEncodingKind ([Text.Encoding]::Unicode.GetBytes("`r`nVerifica"))) 'utf16'
+Assert-Equal 'saída: chkdsk em OEM' (Get-TIOutputEncodingKind ([Text.Encoding]::ASCII.GetBytes('O tipo do sistema'))) 'oem'
+$sg = Split-TIOutputSegments -Text "linha 1`r`n10%`r20%`rlinha 2`nresto"
+Assert-Equal 'saída: \r sozinho é progresso' (($sg.Segments | ForEach-Object { '{0}:{1}' -f $_.Text, [int]$_.Cr }) -join '|') 'linha 1:0|10%:1|20%:1|linha 2:0'
+Assert-Equal 'saída: resto espera o próximo pedaço' $sg.Rest 'resto'
+Assert-Equal 'saída: percentual total do chkdsk' (Get-TIProgressPercent 'Progresso: 1234 de 5678 feitos; Estágio:  18%; Total:  12%; ETA:   0:00:10 ..') 12
+Assert-Equal 'recuperação: em execução nunca' (Get-RecuperacaoInstallState ([pscustomobject]@{ Locked = $false; IsRunning = $true })).CanRepair $false
+Assert-Equal 'recuperação: BitLocker bloqueado nunca' (Get-RecuperacaoInstallState ([pscustomobject]@{ Locked = $true; IsRunning = $false })).CanRepair $false
+$rInst = [pscustomobject]@{ ComputerName = 'LAB-01'; Label = 'Windows 11 Pro 24H2 (26100.2033)'; Drive = 'D:'; WinDir = 'D:\Windows'; Arch = 'x64'; SizeBytes = 256GB; FreeBytes = 40GB }
+$rRes = [pscustomobject]@{ Started = [datetime]'2026-10-05 14:31'; Title = 'Reparo automático'; Stopped = $false; StopReason = ''
+                           Steps = @([pscustomobject]@{ Level = 'Success'; Name = 'Verificar disco (chkdsk /f)'; Text = 'Nenhum erro' }, [pscustomobject]@{ Level = 'Error'; Name = 'Reparar inicialização (bcdboot)'; Text = 'falhou' }) }
+$rTxt = New-RecuperacaoLaudoText -Install $rInst -Actions @($rRes) -Firmware 'UEFI' -Version '1.5.0' -When ([datetime]'2026-10-05 15:00') -WinPE $true
+Assert-True  'laudo recuperação: computador' ($rTxt -match 'Computador\s+: LAB-01')
+Assert-True  'laudo recuperação: passo OK' ($rTxt -match '\[OK\] Verificar disco \(chkdsk /f\): Nenhum erro')
+Assert-True  'laudo recuperação: passo com falha' ($rTxt -match '\[X\]  Reparar inicialização')
+
+# --- Pendrive de recuperação (dev\Criar-Pendrive.ps1: com dot-source só define as funções) ---
+. (Join-Path (Join-Path $root 'dev') 'Criar-Pendrive.ps1')
+$pd = @(
+    [pscustomobject]@{ Number = 0; FriendlyName = 'Samsung SSD 980'; Size = 500GB; BusType = 'NVMe'; IsBoot = $true; IsSystem = $true },
+    [pscustomobject]@{ Number = 1; FriendlyName = 'SanDisk Ultra'; Size = 30752636928; BusType = 'USB' },
+    [pscustomobject]@{ Number = 2; FriendlyName = 'Kingston 4GB'; Size = 3900000000; BusType = 7 },
+    [pscustomobject]@{ Number = 3; FriendlyName = 'WD Elements'; Size = 1TB; BusType = 'USB'; HasRunningWindows = $true },
+    [pscustomobject]@{ Number = 4; FriendlyName = 'Leitor SD'; Size = 0; BusType = 'SD' },
+    [pscustomobject]@{ Number = 5; FriendlyName = 'Pendrive do projeto'; Size = 16GB; BusType = 'USB'; HasProject = $true },
+    [pscustomobject]@{ Number = 6; FriendlyName = 'Cartão travado'; Size = 32GB; BusType = 'SD'; IsReadOnly = $true },
+    [pscustomobject]@{ Number = 7; FriendlyName = 'Disco SATA'; Size = 1TB; BusType = 'SATA'; MediaType = 'Fixed hard disk media' },
+    [pscustomobject]@{ Number = 8; FriendlyName = 'Pendrive 8 GB'; Size = 7743995904; BusType = 'SCSI'; MediaType = 'Removable Media' })
+$pc = @(Get-TIPEDiskCandidates -Disks $pd)
+Assert-Equal 'pendrive: elegíveis só USB/removível de 8 GB' (($pc | Where-Object { $_.Eligible } | ForEach-Object { $_.Number }) -join ',') '1,8'
+Assert-Equal 'pendrive: disco do sistema (NVMe) não é removível' $pc[0].Code 'notremovable'
+Assert-Equal 'pendrive: BusType numérico 7 = USB' $pc[2].BusType 'USB'
+Assert-Equal 'pendrive: menor que 8 GB' $pc[2].Code 'small'
+Assert-Equal 'pendrive: USB com o Windows em execução nunca' $pc[3].Code 'windows'
+Assert-Equal 'pendrive: leitor vazio' $pc[4].Code 'nomedia'
+Assert-Equal 'pendrive: disco da pasta do projeto' $pc[5].Code 'project'
+Assert-Equal 'pendrive: protegido contra gravação' $pc[6].Code 'readonly'
+Assert-Equal 'pendrive: SATA fixo fora' $pc[7].Code 'notremovable'
+Assert-Equal 'pendrive: tamanho na tela' $pc[1].SizeText '28,6 GB'
+Assert-True  'pendrive: APAGAR confirma' (Test-TIPEConfirmWord '  apagar ')
+Assert-True  'pendrive: outra palavra cancela' (-not (Test-TIPEConfirmWord 'sim'))
+Assert-Equal 'pendrive: letras livres' ((Get-TIPEFreeLetters -Used @('C', 'D:', 'E:\', 'f') -Count 2) -join ',') 'G,H'
+Assert-Equal 'pendrive: sem X para o Windows PE' ((Get-TIPEFreeLetters -Used ([char[]]'CDEFGHIJKLMNOPQRSTUVW' | ForEach-Object { [string]$_ }) -Count 2) -join ',') 'Y,Z'
+$dp = Get-TIPEDiskpartScript -DiskNumber 3 -BootLetter 'R' -DataLetter 'S' -FileSystem 'exFAT'
+Assert-Equal 'diskpart: disco certo' $dp[0] 'select disk 3'
+Assert-True  'diskpart: clean sem noerr' (($dp -contains 'clean') -and -not ($dp -match 'noerr'))
+Assert-True  'diskpart: TI-BOOT FAT32 2 GB ativa' (($dp -contains 'create partition primary size=2048') -and ($dp -contains 'format fs=fat32 quick label="TI-BOOT"') -and ($dp -contains 'active'))
+Assert-True  'diskpart: TI-SUITE exFAT' ($dp -contains 'format fs=exfat quick label="TI-SUITE"')
+Assert-True  'diskpart: letra só depois de formatar' ([array]::IndexOf($dp, 'assign letter=R') -gt [array]::IndexOf($dp, 'format fs=fat32 quick label="TI-BOOT"'))
+$sn = New-TIPEStartnet
+$snText = $sn -join "`n"
+Assert-Equal 'startnet: wpeinit primeiro' (@($sn | Where-Object { $_ -and $_ -notmatch '^(@echo|rem )' })[0]) 'wpeinit'
+Assert-True  'startnet: abre com -Recovery' ($snText -match [regex]::Escape('"%TIPS%" -NoProfile -STA -ExecutionPolicy Bypass -File "%TIDRV%\TI-Suite.ps1" -Recovery'))
+Assert-True  'startnet: PowerShell do WinPE' ($snText -match [regex]::Escape('X:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'))
+Assert-True  'startnet: exige portable.config' ($snText -match 'if exist "%%L:\\TI-Suite\.ps1" if exist "%%L:\\portable\.config"')
+Assert-True  'startnet: menu reinicia e desliga' (($snText -match 'wpeutil reboot') -and ($snText -match 'wpeutil shutdown'))
+Assert-True  'startnet: só ASCII' ($snText -match '^[\x00-\x7F]*$')
+Assert-True  'startnet: não procura em X:' ($snText -notmatch '\bW X Y\b')
+$ocs = @('WinPE-WMI.cab', 'WinPE-NetFx.cab', 'WinPE-Scripting.cab', 'WinPE-PowerShell.cab', 'WinPE-StorageWMI.cab', 'WinPE-DismCmdlets.cab',
+         'WinPE-SecureStartup.cab', 'WinPE-EnhancedStorage.cab', 'WinPE-HTA.cab', 'pt-br\lp.cab', 'pt-br\WinPE-WMI_pt-br.cab', 'en-us\WinPE-WMI_en-us.cab',
+         'pt-br\WinPE-PowerShell_pt-br.cab')
+$pp = Get-TIPEPackagePlan -Available $ocs
+Assert-Equal 'WinPE: lp.cab primeiro' $pp.Packages[0] 'pt-br\lp.cab'
+Assert-Equal 'WinPE: componente seguido dos idiomas' (($pp.Packages[1..3]) -join ',') 'WinPE-WMI.cab,en-us\WinPE-WMI_en-us.cab,pt-br\WinPE-WMI_pt-br.cab'
+Assert-Equal 'WinPE: 8 componentes + idiomas' $pp.Packages.Count 12
+Assert-True  'WinPE: só os componentes do contrato' (-not ($pp.Packages -contains 'WinPE-HTA.cab'))
+Assert-Equal 'WinPE: sem falta' $pp.Missing.Count 0
+$pp2 = Get-TIPEPackagePlan -Available @('winpe-wmi.cab')
+Assert-Equal 'WinPE: falta componente' $pp2.Missing.Count 7
+Assert-Equal 'WinPE: sem pacote pt-br' $pp2.LanguagePack $false
+$hf = @{ 'Segoe UI Bold (TrueType)' = 'segoeuib.ttf'; 'Consolas (TrueType)' = 'C:\Windows\Fonts\consola.ttf' }
+Assert-Equal 'fonte: nome do Windows' (Get-TIPEFontValueName -FileName 'SEGOEUIB.TTF' -HostFonts $hf) 'Segoe UI Bold (TrueType)'
+Assert-Equal 'fonte: caminho completo no registro' (Get-TIPEFontValueName -FileName 'consola.ttf' -HostFonts $hf) 'Consolas (TrueType)'
+Assert-Equal 'fonte: sem registro' (Get-TIPEFontValueName -FileName 'segmdl2.ttf' -HostFonts @{}) 'segmdl2 (TrueType)'
+Assert-True  'cópia: código vai' (-not (Test-TIPEAppExcluded 'src\Core\01-Theme.ps1'))
+Assert-True  'cópia: TI-Suite.ps1 e portable.config vão' (-not (Test-TIPEAppExcluded 'TI-Suite.ps1') -and -not (Test-TIPEAppExcluded 'portable.config'))
+foreach ($x in @('dev\Test-Logic.ps1', 'dist\TI-Suite-v1.5.0.zip', '.git\HEAD', '.gitignore', 'TI-Suite-v1.4.0-fonte.zip', 'Criar-Pendrive.cmd',
+                 'logs\audit.csv', 'inventario\inventario.csv', 'wifi\ESCOLA.xml', 'Backup-TI\PC\x.txt', 'reparo\install.wim', 'config.json',
+                 'manifest.sha256', 'bin\TISuite.Controls.dll', '.vscode\settings.json')) {
+    Assert-True ('cópia: fica de fora ' + $x) (Test-TIPEAppExcluded $x)
+}
+Assert-True  'cópia: config.json só na raiz' (Test-TIPEAppExcluded 'config.json')
+$rp = @(Get-TIPERestorePlan -Folders @('F:\Ferramentas\TI-Suite', 'E:\'))
+Assert-Equal 'dados: a raiz volta para a raiz' $rp[0].Source 'E:\'
+Assert-Equal 'dados: raiz sem subpasta' $rp[0].Target ''
+Assert-Equal 'dados: outra pasta em dados-anteriores' $rp[1].Target 'dados-anteriores\F_Ferramentas_TI-Suite'
+Assert-True  'dados: inclui backup, reparo e config.json' ((Get-TIPEFieldItems).Dirs -contains 'reparo' -and (Get-TIPEFieldItems).Dirs -contains 'backup' -and (Get-TIPEFieldItems).Files -contains 'config.json')
+Assert-Equal 'trabalho: %TEMP% normal' (Get-TIPEWorkRoot -Temp 'C:\Users\ana\AppData\Local\Temp' -Id 'ab') 'C:\Users\ana\AppData\Local\Temp\TI-PE-ab'
+Assert-Equal 'trabalho: %TEMP% com acento' (Get-TIPEWorkRoot -Temp 'C:\Users\João\AppData\Local\Temp' -SystemDrive 'C:' -Id 'ab') 'C:\TI-PE-ab'
+Assert-Equal 'trabalho: %TEMP% com &' (Get-TIPEWorkRoot -Temp 'C:\Users\P&D\Temp' -SystemDrive 'D:' -Id 'ab') 'D:\TI-PE-ab'
+$ra = Get-TIPERelaunchArgs -Bound @{ SomenteISO = [System.Management.Automation.SwitchParameter]$true; Disco = 2; Drivers = 'C:\Meus Drivers\'; Boot2023 = [System.Management.Automation.SwitchParameter]$false }
+Assert-Equal 'reabrir: mesmas opções' ($ra -join '|') '-Disco|2|-Drivers|C:\Meus Drivers|-SomenteISO'
+Assert-True  'DISM: barra de progresso' (Test-TIPEProgressLine '[==========================100.0%==========================]')
+Assert-True  'DISM: linha normal' (-not (Test-TIPEProgressLine 'A operação foi concluída com êxito.'))
+Assert-True  'robocopy: 3 ok, 8 falha' ((Test-TIPERobocopyOk 3) -and -not (Test-TIPERobocopyOk 8))
+Assert-Equal 'aspas simples' (ConvertTo-TIPEQuoted "C:\D'Avila\x.cs") "'C:\D''Avila\x.cs'"
+$adk = Get-TIPEAdkLayout -KitsRoot 'C:\Program Files (x86)\Windows Kits\10\'
+Assert-Equal 'ADK: winpe.wim' $adk.WinpeWim 'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\en-us\winpe.wim'
+Assert-Equal 'ADK: bootsect' $adk.Bootsect 'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\amd64\BCDBoot\bootsect.exe'
+$lm = New-TIPELeiaMe -StampLine 'Criado em 05/10/2026' -BootLine (Get-TIPEBootText -Boot2023 $false)
+Assert-True  'LEIA-ME: reparo não reinstala' ($lm -match 'NÃO reinstala o Windows')
+Assert-True  'LEIA-ME: teclas de boot' (($lm -match 'F12') -and ($lm -match 'Esc e depois F9'))
+Assert-True  'LEIA-ME: CRLF' (($lm -split "`r`n").Count -gt 20 -and $lm -notmatch "[^`r]`n")
+Assert-Equal 'LEIA-ME: linha do boot volta na atualização' (Get-TIPEBootLine $lm) (Get-TIPEBootText -Boot2023 $false)
+Assert-Equal 'BusType desconhecido' (ConvertTo-TIPEBusType 99) 'Desconhecido'
+
+# --- Desinstalação em lote: pastas, runtime/segurança e resumo -------------------
+Assert-True  'inside: subpasta'        (Test-TIPathInside 'C:\Program Files\App\bin\x.exe' 'C:\Program Files\App')
+Assert-True  'inside: a própria pasta' (Test-TIPathInside 'C:\Program Files\App' 'C:\Program Files\App')
+Assert-True  'inside: maiúsc./barra'   (Test-TIPathInside 'c:/PROGRAM files/app/X.EXE' 'C:\Program Files\App')
+Assert-Equal 'inside: não confunde App2' (Test-TIPathInside 'C:\Program Files\App2\x.exe' 'C:\Program Files\App') $false
+Assert-Equal 'inside: vazio'           (Test-TIPathInside '' 'C:\App') $false
+Assert-True  'kill: pasta de programa' (Test-TIKillableFolder 'C:\Program Files\App')
+Assert-Equal 'kill: recusa raiz PF'    (Test-TIKillableFolder 'C:\Program Files') $false
+Assert-Equal 'kill: recusa raiz drive' (Test-TIKillableFolder 'C:\') $false
+Assert-Equal 'kill: recusa Windows'    (Test-TIKillableFolder 'C:\Windows\System32\x') $false
+Assert-Equal 'kill: recusa WindowsApps' (Test-TIKillableFolder 'C:\Program Files\WindowsApps\Foo') $false
+Assert-Equal 'pasta: InstallLocation'  (Get-TIAppFolder -InstallLocation 'C:\Program Files\App\') 'C:\Program Files\App'
+Assert-Equal 'pasta: UninstallString'  (Get-TIAppFolder -Uninstall '"C:\Program Files\App\unins000.exe" /x') 'C:\Program Files\App'
+Assert-Equal 'pasta: DisplayIcon'      (Get-TIAppFolder -Icon 'C:\Program Files\App\app.exe,0') 'C:\Program Files\App'
+Assert-Equal 'pasta: MSI sem pasta'    (Get-TIAppFolder -Uninstall 'MsiExec.exe /X{G}') ''
+Assert-True  'segurança: Kaspersky'    (Test-TISecurityProduct 'Kaspersky Free' 'AO Kaspersky Lab')
+Assert-True  'segurança: ESET'         (Test-TISecurityProduct 'ESET NOD32 Antivirus' 'ESET')
+Assert-True  'segurança: AVG'          (Test-TISecurityProduct 'AVG AntiVirus FREE' 'AVG Technologies')
+Assert-Equal 'segurança: não trava Chrome' (Test-TISecurityProduct 'Google Chrome' 'Google LLC') $false
+Assert-True  'runtime: VC++ Redist'    (Test-TIEssentialRuntime 'Microsoft Visual C++ 2015-2022 Redistributable (x64)' 'Microsoft')
+Assert-True  'runtime: .NET Runtime'   (Test-TIEssentialRuntime 'Microsoft .NET Runtime - 8.0.4 (x64)' 'Microsoft')
+Assert-True  'runtime: WebView2'       (Test-TIEssentialRuntime 'Microsoft Edge WebView2 Runtime' 'Microsoft')
+Assert-True  'runtime: Windows App Runtime' (Test-TIEssentialRuntime 'Windows App Runtime 1.4' 'Microsoft')
+Assert-Equal 'runtime: não trava 7-Zip' (Test-TIEssentialRuntime '7-Zip 23.01' 'Igor Pavlov') $false
+Assert-Equal 'trava: motivo segurança' (Get-TIAppBatchLock 'Avast Free Antivirus' 'Avast').Reason 'use a ferramenta oficial do fabricante'
+Assert-Equal 'trava: motivo runtime'   (Get-TIAppBatchLock '.NET Framework 4.8' 'Microsoft').Reason 'outros programas dependem dele'
+Assert-Equal 'trava: programa comum livre' (Get-TIAppBatchLock 'Notepad++' 'Notepad++ Team').Locked $false
+$sr = @(
+    [pscustomobject]@{ Name = 'A'; Status = 'removed';   Reboot = $false; Message = '' },
+    [pscustomobject]@{ Name = 'B'; Status = 'removed';   Reboot = $true;  Message = '' },
+    [pscustomobject]@{ Name = 'C'; Status = 'failed';    Reboot = $false; Message = 'erro X' },
+    [pscustomobject]@{ Name = 'D'; Status = 'cancelled'; Reboot = $false; Message = '' }
+)
+$st = Get-TIUninstallSummaryText -Results $sr
+Assert-True 'resumo: desinstalados'      ($st -match 'Desinstalados: 2')
+Assert-True 'resumo: reinício pendente'  ($st -match 'B \(reinício pendente\)')
+Assert-True 'resumo: motivo da falha'    ($st -match 'C: erro X')
+Assert-True 'resumo: cancelados'         ($st -match 'Cancelados: 1')
 
 Write-Host ''
 if ($script:fail -eq 0) {

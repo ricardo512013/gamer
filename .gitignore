@@ -5,6 +5,9 @@ inventario/
 laudos/
 relatorios/
 wifi/
+backup/
+Backup-TI/
+reparo/
 manifest.sha256
 *.log
 *.zip

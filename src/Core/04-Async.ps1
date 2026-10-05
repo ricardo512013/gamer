@@ -536,10 +536,16 @@ function Get-TIInstalledApps {
                 $seen[$key] = $true
                 $size = 0.0
                 if ($p.EstimatedSize) { $size = [double]$p.EstimatedSize * 1KB }
+                $cleanName = $name.Trim()
+                # Trava de lote: runtime essencial ou antivírus/segurança (motivo no cadeado).
+                # A desinstalação individual continua disponível pelo duplo clique.
+                $lock = Get-TIAppBatchLock -Name $cleanName -Publisher ([string]$p.Publisher)
                 [void]$rows.Add([pscustomobject]@{
-                    Name = $name.Trim(); Version = [string]$p.DisplayVersion; Publisher = [string]$p.Publisher
+                    Name = $cleanName; Version = [string]$p.DisplayVersion; Publisher = [string]$p.Publisher
                     Size = $size; InstallDate = (ConvertFrom-TIInstallDate ([string]$p.InstallDate)); Scope = $scope
                     Uninstall = $uninst; Quiet = [string]$p.QuietUninstallString; Key = $_.PSPath
+                    InstallLocation = [string]$p.InstallLocation; Icon = [string]$p.DisplayIcon
+                    Locked = [bool]$lock.Locked; LockReason = [string]$lock.Reason
                 })
             } catch { }
         }
@@ -712,6 +718,272 @@ function Uninstall-TIApp {
     }
     Emit $msg 'Error'
     return [pscustomobject]@{ Removed = $false; Reboot = $false; Code = $code; Message = $msg }
+}
+
+# ---------------------------------------------------------------------
+# Desinstalação em lote (conveniência): funções puras testadas no
+# dev\Test-Logic.ps1, SEM acessar o disco. As que mexem em processos e
+# serviços (Parte B) e a que roda o lote vêm logo depois.
+# ---------------------------------------------------------------------
+
+# Normaliza um caminho só para COMPARAÇÃO (não acessa o disco): barras viram
+# "\", colapsa barras repetidas, tira aspas e a barra final. Preserva o "\\"
+# inicial de caminhos de rede (UNC).
+function ConvertTo-TINormPath {
+    param([string]$Path)
+    $p = ([string]$Path).Trim()
+    if (-not $p) { return '' }
+    $p = $p.Trim('"').Trim()
+    if (-not $p) { return '' }
+    $p = $p.Replace('/', '\')
+    $unc = $p.StartsWith('\\')
+    while ($p.Contains('\\')) { $p = $p.Replace('\\', '\') }
+    if ($unc) { $p = '\' + $p }
+    return $p.TrimEnd('\')
+}
+
+# Pasta-pai de um caminho ('' quando não há separador)
+function Get-TIParentFolder {
+    param([string]$Path)
+    $p = ConvertTo-TINormPath $Path
+    if (-not $p) { return '' }
+    $idx = $p.LastIndexOf('\')
+    if ($idx -le 0) { return '' }
+    return $p.Substring(0, $idx)
+}
+
+# Regra "o caminho do executável está DENTRO da pasta?" (comparação segura, sem
+# disco): igual à pasta ou começando por "pasta\". Não confunde C:\App com C:\App2.
+function Test-TIPathInside {
+    param([string]$Child, [string]$Folder)
+    $c = ConvertTo-TINormPath $Child
+    $f = ConvertTo-TINormPath $Folder
+    if (-not $c -or -not $f) { return $false }
+    if ($c.Equals($f, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $c.StartsWith($f + '\', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# A pasta do programa é específica o bastante para ali encerrar processos e
+# parar serviços? Recusa pastas amplas (raiz de unidade, C:\Program Files) e
+# tudo dentro do Windows/System32 ou em WindowsApps (Microsoft Store).
+function Test-TIKillableFolder {
+    param([string]$Folder, [string]$WinDir = 'C:\Windows')
+    $f = ConvertTo-TINormPath $Folder
+    if (-not $f) { return $false }
+    $parts = @($f -split '\\' | Where-Object { $_ -ne '' })
+    if ($parts.Count -lt 3) { return $false }   # precisa de unidade + 2 níveis
+    $win = ConvertTo-TINormPath $WinDir
+    if ($win -and (Test-TIPathInside -Child $f -Folder $win)) { return $false }
+    if ($f -match '(?i)(^|\\)windows(\\|$)') { return $false }
+    if ($f -match '(?i)(^|\\)windowsapps(\\|$)') { return $false }
+    return $true
+}
+
+# Pasta de instalação do programa (sem acessar o disco): InstallLocation; na
+# falta dela, a pasta do executável do UninstallString; por último, do
+# DisplayIcon (que pode trazer ",índice" no fim).
+function Get-TIAppFolder {
+    param([string]$InstallLocation = '', [string]$Uninstall = '', [string]$Icon = '')
+    $loc = ([string]$InstallLocation).Trim().Trim('"').Trim()
+    if ($loc) { return (ConvertTo-TINormPath $loc) }
+    $exe = (Split-TICommandLine ([string]$Uninstall)).Exe
+    $dir = Get-TIParentFolder $exe
+    if ($dir) { return $dir }
+    $ic = ([string]$Icon) -replace ',\s*-?\d+\s*$', ''
+    $dir = Get-TIParentFolder $ic
+    if ($dir) { return $dir }
+    return ''
+}
+
+# Produto de antivírus/segurança: desinstalar só com a ferramenta do fabricante.
+# Detecta pelo nome e pelo editor (nomes em ASCII, sem distinção de acento).
+function Test-TISecurityProduct {
+    param([string]$Name, [string]$Publisher)
+    $hay = ('{0} {1}' -f [string]$Name, [string]$Publisher).ToLowerInvariant()
+    return [bool]($hay -match 'defender|kaspersky|\beset\b|nod32|\bavast\b|\bavg\b|norton|symantec|mcafee|bitdefender|sophos|trend ?micro|malwarebytes')
+}
+
+# Runtime essencial do qual outros programas dependem: fica fora do lote.
+function Test-TIEssentialRuntime {
+    param([string]$Name, [string]$Publisher)
+    $hay = ('{0} {1}' -f [string]$Name, [string]$Publisher).ToLowerInvariant()
+    if ($hay -match 'visual c\+\+.*redistributab') { return $true }
+    if ($hay -match '\.net (framework|core|runtime|host)|microsoft \.net|windows desktop runtime|asp\.net core') { return $true }
+    if ($hay -match 'windows app runtime|windowsappruntime') { return $true }
+    if ($hay -match 'webview2') { return $true }
+    return $false
+}
+
+# Trava de lote: segurança (ferramenta do fabricante) ou runtime essencial.
+# Componentes de sistema e atualizações já saem antes (Get-TIInstalledApps).
+function Get-TIAppBatchLock {
+    param([string]$Name, [string]$Publisher)
+    if (Test-TISecurityProduct -Name $Name -Publisher $Publisher) {
+        return [pscustomobject]@{ Locked = $true; Reason = 'use a ferramenta oficial do fabricante' }
+    }
+    if (Test-TIEssentialRuntime -Name $Name -Publisher $Publisher) {
+        return [pscustomobject]@{ Locked = $true; Reason = 'outros programas dependem dele' }
+    }
+    return [pscustomobject]@{ Locked = $false; Reason = '' }
+}
+
+# Texto do resumo da desinstalação em lote (no card e no console), por programa:
+# Desinstalado / Não desinstalado (com o motivo) / Cancelado.
+function Get-TIUninstallSummaryText {
+    param($Results)
+    $all  = @($Results | Where-Object { $_ })
+    $done = @($all | Where-Object { $_.Status -eq 'removed' })
+    $fail = @($all | Where-Object { $_.Status -eq 'failed' })
+    $canc = @($all | Where-Object { $_.Status -eq 'cancelled' })
+    $lines = New-Object System.Collections.ArrayList
+    [void]$lines.Add(('Desinstalados: {0}' -f $done.Count))
+    foreach ($r in $done) {
+        [void]$lines.Add(('  - {0}{1}' -f $r.Name, $(if ($r.Reboot) { ' (reinício pendente)' } else { '' })))
+    }
+    [void]$lines.Add(('Não desinstalados: {0}' -f $fail.Count))
+    foreach ($r in $fail) {
+        $why = if ($r.Message) { [string]$r.Message } else { 'motivo não informado' }
+        [void]$lines.Add(('  - {0}: {1}' -f $r.Name, $why))
+    }
+    if ($canc.Count -gt 0) {
+        [void]$lines.Add(('Cancelados: {0}' -f $canc.Count))
+        foreach ($r in $canc) { [void]$lines.Add(('  - {0}' -f $r.Name)) }
+    }
+    return ($lines -join "`n")
+}
+
+# PARTE B: antes de desinstalar, encerra os componentes DAQUELE programa para os
+# arquivos não ficarem presos — sempre DENTRO da pasta de instalação dele. Fecha
+# janelas e encerra os processos cujo executável está na pasta (primeiro
+# CloseMainWindow; se seguir aberto, Kill) e para os serviços cujo binário está
+# na pasta (a desinstalação remove o serviço). Nunca toca em nada fora da pasta,
+# nem no Windows/System32/WindowsApps.
+function Close-TIAppComponents {
+    param([string]$Folder, [string]$Name = '')
+    $win = Get-TIWinDir
+    if (-not (Test-TIKillableFolder -Folder $Folder -WinDir $win)) {
+        Emit ('  Sem pasta de instalação confiável para {0}: nada foi encerrado antes.' -f $Name) 'Debug'
+        return
+    }
+    if (-not (Test-Path -LiteralPath $Folder)) {
+        Emit ('  A pasta de {0} não existe mais: nada para encerrar.' -f $Name) 'Debug'
+        return
+    }
+
+    # Serviços cujo binário está na pasta (sem -Force: não derruba dependentes de fora)
+    try {
+        foreach ($svc in @(Get-CimInstance -ClassName Win32_Service -ErrorAction SilentlyContinue)) {
+            $exe = (Split-TICommandLine ([string]$svc.PathName)).Exe
+            if (-not $exe) { continue }
+            if (-not (Test-TIPathInside -Child $exe -Folder $Folder)) { continue }
+            if (Test-TIPathInside -Child $exe -Folder $win) { continue }
+            if ([string]$svc.State -ne 'Running' -and [string]$svc.State -ne 'Paused') { continue }
+            try {
+                Stop-Service -Name ([string]$svc.Name) -ErrorAction Stop
+                Emit ('  Serviço parado: {0}' -f $svc.Name) 'Debug'
+            } catch {
+                Emit ('  Não deu para parar o serviço {0}: {1}' -f $svc.Name, $_.Exception.Message) 'Debug'
+            }
+        }
+    } catch { }
+
+    # Processos cujo executável está na pasta
+    $toKill = New-Object System.Collections.ArrayList
+    try {
+        foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
+            if ($proc.Id -eq $PID) { continue }
+            $path = $null
+            try { $path = [string]$proc.MainModule.FileName } catch { }
+            if (-not $path) { try { $path = [string]$proc.Path } catch { } }
+            if (-not $path) { continue }
+            if (-not (Test-TIPathInside -Child $path -Folder $Folder)) { continue }
+            if (Test-TIPathInside -Child $path -Folder $win) { continue }
+            try { if ($proc.MainWindowHandle -ne [System.IntPtr]::Zero) { [void]$proc.CloseMainWindow() } } catch { }
+            [void]$toKill.Add($proc)
+        }
+    } catch { }
+
+    if ($toKill.Count -gt 0) {
+        # dá um tempo para as janelas fecharem sozinhas depois do CloseMainWindow
+        $deadline = (Get-Date).AddSeconds(5)
+        while ((Get-Date) -lt $deadline) {
+            $alive = @($toKill | Where-Object { try { -not $_.HasExited } catch { $false } })
+            if ($alive.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 300
+        }
+        foreach ($proc in $toKill) {
+            try {
+                if (-not $proc.HasExited) {
+                    $proc.Kill()
+                    Emit ('  Processo encerrado: {0}' -f $proc.ProcessName) 'Debug'
+                } else {
+                    Emit ('  Janela fechada: {0}' -f $proc.ProcessName) 'Debug'
+                }
+            } catch {
+                Emit ('  Não deu para encerrar {0}: {1}' -f $proc.ProcessName, $_.Exception.Message) 'Debug'
+            }
+        }
+    }
+}
+
+# PARTE A: desinstala vários programas, um a um. Para cada um, encerra antes os
+# componentes dele (Parte B) e usa o modo silencioso quando conhecido (quem
+# decide é Get-TIUninstallPlan). Devolve um objeto com os resultados por programa.
+function Uninstall-TIAppBatch {
+    param($Apps)
+    $apps = @($Apps | Where-Object { $_ -and $_.PSObject.Properties['Name'] })
+    $results = New-Object System.Collections.ArrayList
+    $total = $apps.Count
+    if ($total -gt 0) {
+        $i = 0
+        foreach ($app in $apps) {
+            $i++
+            $name = [string]$app.Name
+            # Dupla checagem: item travado nunca entra no lote
+            $lock = Get-TIAppBatchLock -Name $name -Publisher ([string]$app.Publisher)
+            if ($lock.Locked) {
+                Emit ('{0}: fora do lote ({1}).' -f $name, $lock.Reason) 'Warn'
+                [void]$results.Add([pscustomobject]@{ Name = $name; Status = 'failed'; Reboot = $false; Code = $null; Message = ('fora do lote: ' + $lock.Reason) })
+                continue
+            }
+            Emit ('Programa {0} de {1}: {2}' -f $i, $total, $name) 'Info' ([int](100 * $i / $total))
+
+            # Parte B: encerra os componentes do programa (dentro da pasta dele)
+            $folder = Get-TIAppFolder -InstallLocation ([string]$app.InstallLocation) -Uninstall ([string]$app.Uninstall) -Icon ([string]$app.Icon)
+            if ($folder) { Close-TIAppComponents -Folder $folder -Name $name }
+
+            $res = $null
+            try {
+                $res = Uninstall-TIApp -App $app
+            } catch {
+                $msg = $_.Exception.Message
+                Emit ('{0}: {1}' -f $name, $msg) 'Error'
+                [void]$results.Add([pscustomobject]@{ Name = $name; Status = 'failed'; Reboot = $false; Code = $null; Message = $msg })
+                continue
+            }
+            $status = 'failed'
+            if ($res.Removed) { $status = 'removed' }
+            elseif ($res.Reboot) { $status = 'removed' }
+            elseif ([int]$res.Code -eq 1602) { $status = 'cancelled' }
+            [void]$results.Add([pscustomobject]@{
+                Name = $name; Status = $status; Reboot = [bool]$res.Reboot; Code = $res.Code; Message = [string]$res.Message
+            })
+        }
+    } else {
+        Emit 'Nenhum programa marcado.' 'Warn'
+    }
+
+    $summary = Get-TIUninstallSummaryText -Results $results
+    foreach ($line in ($summary -split "`n")) { Emit $line 'Info' }
+    return [pscustomobject]@{
+        Kind      = 'UninstallBatch'
+        Results   = $results.ToArray()
+        Summary   = $summary
+        Done      = @($results | Where-Object { $_.Status -eq 'removed' }).Count
+        Fail      = @($results | Where-Object { $_.Status -eq 'failed' }).Count
+        Cancelled = @($results | Where-Object { $_.Status -eq 'cancelled' }).Count
+        Reboot    = (@($results | Where-Object { $_.Reboot }).Count -gt 0)
+    }
 }
 
 # ---------------------------------------------------------------------

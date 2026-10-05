@@ -1,5 +1,6 @@
 ﻿# =====================================================================
-# 02-DIALOGS.ps1 - Janelas modais: confirmação, entrada de texto e aviso (toast)
+# 02-DIALOGS.ps1 - Janelas modais: confirmação, entrada de texto, aviso (toast)
+#                  e arquivos (onde salvar e como mostrar, também no WinPE)
 # Os handlers dos diálogos rodam enquanto ShowDialog mantém o escopo da função
 # ativo, por isso podem referenciar variáveis locais diretamente. O aviso
 # (toast) não é modal: os handlers dele usam só $global: e $this.
@@ -428,6 +429,119 @@ function Show-TIInput {
 }
 
 # ---------------------------------------------------------------------
+# Arquivos: onde salvar e como mostrar. O WinPE do pendrive de recuperação
+# não tem Explorer, e o diálogo "Salvar como" não é confiável nele: lá o
+# arquivo vai direto para uma pasta do app (logs\, laudos\...) na partição
+# TI-SUITE, e quem chama mostra o caminho num aviso.
+# ---------------------------------------------------------------------
+
+# Bloco de notas do Windows (existe também no WinPE)
+function Get-TINotepadPath {
+    try {
+        $p = Join-Path $env:SystemRoot 'System32\notepad.exe'
+        if (Test-Path -LiteralPath $p) { return $p }
+    } catch { }
+    return 'notepad.exe'
+}
+
+# Caminho livre na pasta: 'laudo.txt' vira 'laudo (2).txt' quando já existe
+function Get-TIUniquePath {
+    param([Parameter(Mandatory)][string]$Dir, [Parameter(Mandatory)][string]$FileName)
+    $path = Join-Path $Dir $FileName
+    if (-not (Test-Path -LiteralPath $path)) { return $path }
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
+    $ext = [System.IO.Path]::GetExtension($FileName)
+    for ($i = 2; $i -lt 1000; $i++) {
+        $p = Join-Path $Dir ('{0} ({1}){2}' -f $base, $i, $ext)
+        if (-not (Test-Path -LiteralPath $p)) { return $p }
+    }
+    return $path
+}
+
+function Select-TISaveFile {
+    <#
+      Caminho para salvar um arquivo; $null = cancelou (ou não há onde gravar).
+        -FileName  nome sugerido
+        -Folder    subpasta do app (logs, laudos, relatorios...): pasta inicial do
+                   diálogo no modo portátil e destino direto no WinPE
+      Fora do WinPE: diálogo "Salvar como". No WinPE: <app>\<Folder>\<FileName>
+      (cria a pasta e não sobrescreve); avise o caminho com Show-TIToast.
+    #>
+    param(
+        [string]$Title = 'Salvar',
+        [string]$Filter = 'Todos os arquivos (*.*)|*.*',
+        [string]$FileName = '',
+        [string]$Folder = 'logs'
+    )
+    $dir = $null
+    $base = if (Get-Command Get-TIAppDataDir -ErrorAction SilentlyContinue) { Get-TIAppDataDir } else { $global:TIRoot }
+    if ($base) { $dir = $(if ($Folder) { Join-Path $base $Folder } else { $base }) }
+
+    if ($global:TIWinPE) {
+        if (-not $dir) { return $null }
+        try {
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null }
+        } catch {
+            Show-TIToast -Text ('Não deu para criar a pasta {0} (pendrive protegido contra gravação ou cheio?).' -f $dir) -Type 'Error'
+            return $null
+        }
+        $name = if ($FileName) { $FileName } else { 'TI-Suite-{0}.txt' -f (Get-Date -Format 'yyyyMMdd-HHmm') }
+        return (Get-TIUniquePath -Dir $dir -FileName $name)
+    }
+
+    $dlg = New-Object System.Windows.Forms.SaveFileDialog
+    try {
+        $dlg.Title = $Title
+        $dlg.Filter = $Filter
+        if ($FileName) { $dlg.FileName = $FileName }
+        # Modo portátil: abre na pasta do pendrive, não nos Documentos do PC atendido
+        if ($global:TIPortable -and $dir -and (Test-Path -LiteralPath $dir)) { $dlg.InitialDirectory = $dir }
+        $owner = Get-TIOwner
+        $res = if ($owner) { $dlg.ShowDialog($owner) } else { $dlg.ShowDialog() }
+        if ($res -ne 'OK') { return $null }
+        return $dlg.FileName
+    } finally {
+        $dlg.Dispose()
+    }
+}
+
+function Open-TIFile {
+    <#
+      Mostra um arquivo ou pasta gravado pelo app. Devolve $true se abriu algo.
+      Fora do WinPE: Explorer (arquivo selecionado na pasta dele; pasta aberta).
+      No WinPE (sem Explorer): arquivos de texto abrem no Bloco de notas (o
+      Arquivo > Abrir dele serve para navegar nas pastas); o resto (pastas,
+      outros tipos) mostra o caminho num aviso.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Show-TIToast -Text ('Não encontrado: {0}' -f $Path) -Type 'Warn'
+        return $false
+    }
+    try {
+        if ($global:TIWinPE) {
+            $isText = (Test-Path -LiteralPath $Path -PathType Leaf) -and
+                      ([System.IO.Path]::GetExtension($Path) -match '^\.(txt|log|csv|xml|json|ini|cfg|md)$')
+            if ($isText) {
+                Start-Process -FilePath (Get-TINotepadPath) -ArgumentList ('"{0}"' -f $Path) -ErrorAction Stop
+                return $true
+            }
+            Show-TIToast -Text ('Caminho: {0}' -f $Path) -Type 'Info' -Duration 8000
+            return $false
+        }
+        if (Test-Path -LiteralPath $Path -PathType Container) {
+            Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $Path) -ErrorAction Stop
+        } else {
+            Start-Process -FilePath 'explorer.exe' -ArgumentList ('/select,"{0}"' -f $Path) -ErrorAction Stop
+        }
+        return $true
+    } catch {
+        Show-TIToast -Text ('Não deu para abrir {0}: {1}' -f $Path, $_.Exception.Message) -Type 'Error'
+        return $false
+    }
+}
+
+# ---------------------------------------------------------------------
 # Avisos (toasts)
 #   - um por vez, no canto inferior direito da janela principal, acima da
 #     barra de status (no canto da tela se a janela estiver minimizada);
@@ -435,7 +549,8 @@ function Show-TIInput {
 #     1,5x para aviso e 2x para erro (máximo 16 s); -Duration só aumenta;
 #   - mouse em cima pausa a contagem; clique fecha;
 #   - um aviso de erro visível não é trocado por outro: os seguintes esperam
-#     na fila até ele sair (o mesmo vale para Info/OK sobre um aviso).
+#     na fila até ele sair (o mesmo vale para Info/OK sobre um aviso);
+#   - no WinPE (sem DWM) aparece e some sem esmaecer: nada de janela em camadas.
 # ---------------------------------------------------------------------
 $global:ActiveToast = $null
 $global:TIToastQueue = New-Object System.Collections.ArrayList
@@ -560,7 +675,8 @@ function Open-TIToast {
     $f.TopMost = $true
     $f.StartPosition = 'Manual'
     $f.BackColor = $global:Pal.CardAlt
-    $f.Opacity = 0
+    $fade = -not $global:TIWinPE
+    if ($fade) { $f.Opacity = 0 }
     $f.AutoScaleMode = 'None'
     $f.Cursor = [System.Windows.Forms.Cursors]::Hand
 
@@ -595,7 +711,8 @@ function Open-TIToast {
     $timer.Interval = 16
     $global:ActiveToast = @{
         Form = $f; Timer = $timer; Text = $Req.Text; Type = $Req.Type
-        Phase = 'In'; Held = 0; Hold = [int][Math]::Ceiling($ms / 16); Fade = 0.10
+        Phase = $(if ($fade) { 'In' } else { 'Hold' }); Held = 0; Hold = [int][Math]::Ceiling($ms / 16); Fade = 0.10
+        NoFade = (-not $fade)
     }
 
     foreach ($c in @($f, $accent, $g, $lbl)) { $c.Add_Click({ Hide-TIToast }) }
@@ -628,8 +745,8 @@ function Step-TIToast {
             if ($st.Held -ge $st.Hold) { $st.Phase = 'Out' }
         }
         'Out' {
-            $f.Opacity = [Math]::Max(0.0, $f.Opacity - $st.Fade)
-            if ($f.Opacity -le 0.0) {
+            if (-not $st.NoFade) { $f.Opacity = [Math]::Max(0.0, $f.Opacity - $st.Fade) }
+            if ($st.NoFade -or $f.Opacity -le 0.0) {
                 Close-TIToast
                 Show-TIToastNext
             }

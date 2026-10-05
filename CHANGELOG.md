@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.5.0
+
+### Pendrive de recuperação (dá boot)
+- **`Criar-Pendrive.cmd`** (na pasta de código-fonte) cria um pendrive com duas partições: **TI-BOOT** (Windows PE do
+  Windows ADK, em pt-BR, teclado ABNT2, com PowerShell, WMI, DISM e BitLocker; boot BIOS e UEFI, Secure Boot pode ficar
+  ligado) e **TI-SUITE** (o app e os dados). No boot, o TI Suite abre sozinho em modo recuperação; ao fechar, um menu
+  oferece abrir de novo, prompt, reiniciar ou desligar. Os dados de campo do pendrive antigo são guardados e devolvidos.
+  Opções: `-SomenteAtualizar` (recopia o app sem formatar), `-SomenteISO` (gera um ISO para máquina virtual),
+  `-Boot2023` (boot assinado com a Windows UEFI CA 2023), `-Drivers` (ex.: Intel RST/VMD). O mesmo pendrive continua
+  funcionando com o Windows aberto (`Iniciar.cmd`).
+
+### Modo recuperação (nova área, só no boot ou com `-Recovery`)
+- Repara o Windows 10/11 do disco **sem reinstalar**. **Reparo automático** encadeia chkdsk, recriação da inicialização,
+  desfazer atualização pendente, SFC e DISM, e gera laudo. Separados: **Reparar inicialização** (bcdboot, com cópia do
+  BCD antes), **Verificar disco** (chkdsk /f ou /r), **Reparar arquivos do sistema** (SFC e DISM offline, com a imagem
+  opcional em `reparo\`), **Desfazer atualização** (pendente ou recente), **Remover driver** de terceiros e **Modo de
+  segurança**.
+- **Programas (remoção offline):** remove, pelo pendrive, o programa que não sai com o PC ligado — apaga a pasta, os
+  atalhos e a entrada na lista do Windows do disco. Runtimes essenciais e antivírus ficam protegidos.
+- **Destravar BitLocker** pela chave de recuperação (nunca gravada), saúde do disco antes de reparar, aviso de hibernação
+  (Inicialização rápida) e laudo em `laudos\`. O Windows em execução nunca é alterado.
+- Núcleo compartilhado `src\Core\06-Windows.ps1` (acha as instalações do Windows nos discos, lê o registro offline, lista
+  usuários e volumes de destino), usado pela Recuperação e pelo Backup.
+
+### Backup de usuários (nova área)
+- Copia **a pasta inteira de cada usuário** (`C:\Users\<nome>`) para um HD externo ou pendrive, com o Windows aberto
+  (Ctrl+8) ou no boot (Ctrl+2, quando o Windows não inicia). Usa robocopy (sem seguir junções; modo de backup como
+  administrador), um usuário por vez, com percentual pelo que já foi gravado.
+- Origem: o próprio PC ou outro Windows dos discos (no boot, escolha na lista; BitLocker travado avisa para destravar).
+  Usuários vêm desmarcados, com tamanho e último uso. Destino em tabela, com aviso de mesmo disco físico, FAT32 e
+  pendrive do TI Suite. Não começa se não couber com 5% de folga.
+- "Pular temporários e caches" (ligado): Temp, INetCache e caches do Chrome, Edge e Firefox ficam de fora. Cada pasta
+  recebe um `LEIA-ME.txt`; Cancelar marca a pasta como INCOMPLETA; resumo por usuário no card e no console; auditoria
+  com os usuários e o destino.
+
+### Programas
+- A lista agora tem **caixas para marcar**: marque vários e use **Desinstalar marcados** para removê-los de uma vez,
+  numa única tarefa. O filtro continua e o contador mostra quantos estão marcados.
+- Antes de cada programa, o TI Suite **fecha as janelas, encerra os processos e para os serviços daquele programa** (só
+  dentro da pasta de instalação dele) para evitar o aviso de "aplicativo está aberto". Nunca toca em nada fora da pasta
+  do programa, nem no Windows/System32/WindowsApps.
+- Resumo por programa no fim (Desinstalado / Não desinstalado com o motivo / Cancelado); se algum pedir reinício, aparece
+  **Reiniciar agora** (com confirmação, nunca sozinho).
+- Ficam **fora do lote** (com cadeado e o motivo): runtimes essenciais (Visual C++, .NET, Windows App Runtime, WebView2)
+  e antivírus/segurança. Continuam podendo ser desinstalados **um a um pelo duplo clique**.
+
+### Interface e geral
+- `Register-TIWorkspace -Modes Normal|Recovery|Both`: cada área diz em que modo aparece; atalhos Ctrl+1..N conforme as
+  áreas do modo. Nova entrada `-Recovery` (ou automático no Windows PE), com título, marca e selo próprios, janela que
+  cabe em 1024x768 e 800x600, sem depender de barra de tarefas nem de DWM. No Windows PE: sem UAC (já é administrador),
+  sempre portátil, integridade conferida, Logs no Bloco de notas, Exportar e laudos direto nas pastas do pendrive.
+- Exportar a lista de uma tabela para `.csv` passa a funcionar também no modo recuperação (grava em `relatorios\`).
+- Novos ajudantes `Select-TISaveFile` e `Open-TIFile`, que funcionam no Windows e no Windows PE.
+- Build: roda os testes antes de empacotar; `backup\`, `Backup-TI\`, `reparo\`, `wifi\` e o `Criar-Pendrive.cmd` ficam
+  fora do pacote.
+
 ## 1.4.0
 
 ### Perfis de usuários (Manutenção)

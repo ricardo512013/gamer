@@ -5,7 +5,8 @@
 #   3. compila src\Core\Controls.cs em bin\TISuite.Controls.dll (+ carimbo)
 #   4. monta o pacote numa pasta temporária e grava nela o manifest.sha256
 #      (só código: .ps1, .cs, .cmd e bin\*; documentação e portable.config ficam de fora)
-#   5. cria dist\TI-Suite-vX.Y.Z.zip (sem dev\, logs\, inventario\, config.json da máquina, .git)
+#   5. cria dist\TI-Suite-vX.Y.Z.zip (sem dev\, logs\, inventario\, backup\, reparo\, config.json da máquina,
+#      .git e Criar-Pendrive.cmd, que só serve na pasta de código-fonte)
 # O manifesto vai só no pacote: na pasta do projeto ele travaria o app a cada edição.
 # Uso:  powershell -NoProfile -ExecutionPolicy Bypass -File .\dev\Build-Release.ps1
 # =====================================================================
@@ -68,9 +69,10 @@ Add-Type -TypeDefinition $src -ReferencedAssemblies System.dll, System.Drawing.d
 Write-Host ('DLL: {0}' -f $dll) -ForegroundColor Green
 
 # 4. Arquivos do pacote e manifesto de integridade ---------------------------
-# dados de campo (laudos, relatórios, perfis de Wi-Fi com senha) nunca vão para o pacote
-$excludeDirs  = @('dev', 'logs', 'dist', '.git', 'inventario', 'laudos', 'relatorios', 'wifi')
-$excludeFiles = @('manifest.sha256', 'config.json', 'exceptions.log', 'crash.log', 'audit.csv', 'inventario.csv')
+# dados de campo (laudos, relatórios, perfis de Wi-Fi com senha, backups de usuários, imagens do
+# Windows da pasta reparo) nunca vão para o pacote; o Criar-Pendrive.cmd precisa da pasta dev\
+$excludeDirs  = @('dev', 'logs', 'dist', '.git', 'inventario', 'laudos', 'relatorios', 'wifi', 'backup', 'Backup-TI', 'reparo')
+$excludeFiles = @('manifest.sha256', 'config.json', 'exceptions.log', 'crash.log', 'audit.csv', 'inventario.csv', 'Criar-Pendrive.cmd')
 
 function Get-RelPath([System.IO.FileInfo]$f) {
     return $f.FullName.Substring($root.Length).TrimStart('\', '/')

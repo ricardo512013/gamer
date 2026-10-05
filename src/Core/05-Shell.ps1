@@ -3,6 +3,11 @@
 # Código de nível superior. Os handlers de eventos usam $this, $this.Tag ou
 # $global: (nunca variáveis locais): funcionam em qualquer escopo e não
 # confundem variáveis de mesmo nome de outro diálogo aberto.
+#
+# Modo recuperação ($global:TIRecovery; no WinPE também $global:TIWinPE):
+# título e marca próprios, só as áreas registradas para o modo, janela que
+# cabe em 800x600 e, no WinPE, sempre maximizada, sem minimizar (não há
+# barra de tarefas) e sem nada que dependa do Explorer.
 # =====================================================================
 
 $global:NavItems = @{}
@@ -33,9 +38,11 @@ function ConvertTo-TIPlain {
 # vêm de Set-TIInitialBounds, no fim do Start-TIApp.
 # ---------------------------------------------------------------------
 $global:Form = New-Object TISuite.TIForm
-$global:Form.Text = 'TI Suite'
+$global:Form.Text = $(if ($global:TIWindowTitle) { $global:TIWindowTitle } elseif ($global:TIRecovery) { 'TI Suite — Recuperação' } else { 'TI Suite' })
 $global:Form.Size = New-Object System.Drawing.Size(1252, 792)
-$global:Form.MinimumSize = New-Object System.Drawing.Size(1040, 640)
+# Tamanho mínimo: o modo recuperação cabe em 800x600 (vídeo genérico do WinPE)
+$global:TIMinSize = if ($global:TIRecovery) { New-Object System.Drawing.Size(760, 540) } else { New-Object System.Drawing.Size(1040, 640) }
+$global:Form.MinimumSize = $global:TIMinSize
 $global:Form.StartPosition = 'CenterScreen'
 $global:Form.BackColor = $global:Pal.Bg
 $global:Form.KeyPreview = $true
@@ -104,7 +111,7 @@ $logo.BackdropColor = $global:Pal.Sidebar
 $logo.Size = New-Object System.Drawing.Size(38, 38)
 $logo.Location = New-Object System.Drawing.Point(14, 13)
 $brand.Controls.Add($logo)
-$logoGlyph = New-TIGlyph -Icon 'Terminal' -Size 17 -Color $global:Pal.OnPrimary
+$logoGlyph = New-TIGlyph -Icon $(if ($global:TIRecovery) { 'Repair' } else { 'Terminal' }) -Size 17 -Color $global:Pal.OnPrimary
 $logoGlyph.Location = New-Object System.Drawing.Point(7, 7)
 $logo.Controls.Add($logoGlyph)
 
@@ -112,7 +119,7 @@ $brandTitle = New-TILabel -Text 'TI Suite' -Size 13 -Bold
 $brandTitle.Location = New-Object System.Drawing.Point(60, 13)
 $brand.Controls.Add($brandTitle)
 
-$brandSub = New-TILabel -Text $(if ($global:TIPortable) { 'Portátil (USB)' } else { 'Suporte escolar' }) -Size 7.5 -Muted
+$brandSub = New-TILabel -Text $(if ($global:TIRecovery) { 'Modo recuperação' } elseif ($global:TIPortable) { 'Portátil (USB)' } else { 'Suporte escolar' }) -Size 7.5 -Muted
 $brandSub.Location = New-Object System.Drawing.Point(61, 36)
 $brand.Controls.Add($brandSub)
 
@@ -315,7 +322,7 @@ $headDiv.Height = 1
 $headDiv.BackColor = $global:Pal.BorderSoft
 $header.Controls.Add($headDiv)
 
-$hTitle = New-TILabel -Text 'Início' -Size 15 -Bold
+$hTitle = New-TILabel -Text $(if ($global:TIRecovery) { 'Recuperação' } else { 'Início' }) -Size 15 -Bold
 $hTitle.Location = New-Object System.Drawing.Point(24, 9)
 $hTitle.Anchor = 'Top,Left'
 $header.Controls.Add($hTitle)
@@ -363,14 +370,16 @@ $btnMax.Radius = 7
 $btnMax.Add_Click({ Switch-TIMaximize })
 $global:BtnMax = $btnMax
 
-$btnClose = New-TIGlyphButton -Icon 'Close' -Tip 'Fechar' -Size 44
+# No WinPE, fechar só fecha: o startnet.cmd do pendrive mostra o menu (abrir de novo, prompt, reiniciar, desligar)
+$btnClose = New-TIGlyphButton -Icon 'Close' -Tip $(if ($global:TIWinPE) { 'Fechar (volta ao menu do pendrive)' } else { 'Fechar' }) -Size 44
 $btnClose.Radius = 7
 $btnClose.Add_MouseEnter({ $this.Style = 'Danger' })
 $btnClose.Add_MouseLeave({ $this.Style = 'Ghost' })
 $btnClose.Add_Click({ $global:Form.Close() })
 
 [void]$caption.Controls.Add($btnLog)
-[void]$caption.Controls.Add($btnMin)
+# WinPE: sem barra de tarefas, a janela minimizada não teria como voltar
+if (-not $global:TIWinPE) { [void]$caption.Controls.Add($btnMin) }
 [void]$caption.Controls.Add($btnMax)
 [void]$caption.Controls.Add($btnClose)
 
@@ -448,7 +457,8 @@ $clock = New-TILabel -Text (Get-Date -Format 'HH:mm') -Size 8 -Dim
 $status.Controls.Add($clock)
 $global:ClockLabel = $clock
 
-$statVer = New-TILabel -Text ('{0}  |  v{1}' -f $env:COMPUTERNAME, $global:TI.Version) -Size 8 -Dim
+# No WinPE o nome do computador é o do próprio WinPE (MININT-...), não o do PC atendido
+$statVer = New-TILabel -Text ('{0}  |  v{1}' -f $(if ($global:TIWinPE) { 'WinPE' } else { $env:COMPUTERNAME }), $global:TI.Version) -Size 8 -Dim
 $status.Controls.Add($statVer)
 $global:StatusVersion = $statVer
 
@@ -476,7 +486,8 @@ $clockTimer.Start()
 # ---------------------------------------------------------------------
 # Botão da barra de tarefas: progresso da tarefa, vermelho por alguns
 # segundos quando termina com erro e pisca se a janela estiver atrás.
-# Melhor esforço (Windows 7+), só depois que a janela apareceu.
+# Melhor esforço (Windows 7+), só depois que a janela apareceu. O WinPE não
+# tem barra de tarefas: nada a fazer (as chamadas nativas já são protegidas).
 # ---------------------------------------------------------------------
 $global:TaskbarTimer = New-Object System.Windows.Forms.Timer
 $global:TaskbarTimer.Interval = 5000
@@ -491,7 +502,7 @@ function Update-TITaskbar {
         [int]$Percent = -1,
         [switch]$Flash
     )
-    if (-not $global:TIShown -or -not $global:Form -or $global:Form.IsDisposed) { return }
+    if ($global:TIWinPE -or -not $global:TIShown -or -not $global:Form -or $global:Form.IsDisposed) { return }
     try {
         $global:TaskbarTimer.Stop()
         switch ($State) {
@@ -507,6 +518,20 @@ function Update-TITaskbar {
 # ---------------------------------------------------------------------
 # Navegação
 # ---------------------------------------------------------------------
+
+# A área aparece neste modo? -Modes: 'Normal' (padrão: só no modo normal),
+# 'Recovery' (só no modo recuperação) ou 'Both'. Função pura (testável sem janela).
+function Test-TIWorkspaceMode {
+    param([string]$Modes = 'Normal', [bool]$Recovery = $false)
+    switch ($Modes) {
+        'Both'     { return $true }
+        'Recovery' { return $Recovery }
+        default    { return (-not $Recovery) }
+    }
+}
+
+# A ordem de registro é a ordem da barra lateral e dos atalhos Ctrl+1..N.
+# Área de outro modo é ignorada: não aparece, não tem atalho nem é construída.
 function Register-TIWorkspace {
     param(
         [Parameter(Mandatory)][string]$Id,
@@ -517,11 +542,13 @@ function Register-TIWorkspace {
         [Parameter(Mandatory)][scriptblock]$Build,
         [scriptblock]$Actions,
         [scriptblock]$OnActivate,
-        [scriptblock]$Refresh
+        [scriptblock]$Refresh,
+        [ValidateSet('Normal','Recovery','Both')][string]$Modes = 'Normal'
     )
+    if (-not (Test-TIWorkspaceMode -Modes $Modes -Recovery ([bool]$global:TIRecovery))) { return }
     $item = [pscustomobject]@{
         Id = $Id; Title = $Title; Sub = $Sub; Icon = $Icon; Keywords = $Keywords
-        Build = $Build; Actions = $Actions; OnActivate = $OnActivate; Refresh = $Refresh
+        Build = $Build; Actions = $Actions; OnActivate = $OnActivate; Refresh = $Refresh; Modes = $Modes
     }
     [void]$global:TI.Workspaces.Add($item)
 }
@@ -713,6 +740,7 @@ function Apply-TIConsolePreference {
 # Elevação: o selo "Sem elevação" reabre o app como administrador
 # ---------------------------------------------------------------------
 function Restart-TIElevated {
+    if ($global:TIWinPE) { return }   # WinPE: já roda como SYSTEM
     if ($global:TI.Busy) { Show-TIToast -Text 'Espere a tarefa atual terminar.' -Type 'Warn'; return }
     $ok = Show-TIConfirm -Title 'Reabrir como administrador' -Icon 'Shield' -Style 'Primary' `
             -Message "O TI Suite vai fechar e abrir de novo com permissão de administrador. O Windows mostra a confirmação (UAC) antes." `
@@ -722,7 +750,9 @@ function Restart-TIElevated {
     try {
         # Get-TIElevatedArgs (TI-Suite.ps1): caminho UNC se a pasta estiver numa unidade mapeada;
         # -Reopen faz a nova janela esperar esta fechar (instância única)
-        $proc = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList (Get-TIElevatedArgs -Reopen) -PassThru -ErrorAction Stop
+        # -Recovery também vai junto quando o app está no modo recuperação
+        $exe = if ($global:TIPowerShellExe) { $global:TIPowerShellExe } else { 'powershell.exe' }
+        $proc = Start-Process -FilePath $exe -Verb RunAs -ArgumentList (Get-TIElevatedArgs -Reopen) -PassThru -ErrorAction Stop
     } catch {
         Show-TIToast -Text 'A elevação foi cancelada no Windows (UAC).' -Type 'Warn'
         return
@@ -743,7 +773,9 @@ function Restart-TIElevated {
 }
 
 function Invoke-TIBadgeClick {
-    if ($global:TI.Elevated) {
+    if ($global:TIWinPE) {
+        Show-TIToast -Text 'Modo recuperação (WinPE): o TI Suite roda com permissão total. Ao fechar, volta o menu do pendrive.' -Type 'Info'
+    } elseif ($global:TI.Elevated) {
         Show-TIToast -Text 'Aberto como administrador: todas as ações estão liberadas.' -Type 'Success'
     } else {
         Restart-TIElevated
@@ -762,6 +794,13 @@ function Get-TIOperatorName {
 function Get-TISessionUser {
     $name = ''
     $sid = ''
+    # WinPE: ninguém conectado; o processo é o SYSTEM do próprio WinPE
+    if ($global:TIWinPE) {
+        try {
+            $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            return [pscustomobject]@{ Name = $id.Name; Sid = $id.User.Value }
+        } catch { return [pscustomobject]@{ Name = $env:USERNAME; Sid = '' } }
+    }
     $sess = -1
     try { $sess = [System.Diagnostics.Process]::GetCurrentProcess().SessionId } catch { }
     # 1. Dono do explorer.exe desta sessão (vale também para área de trabalho remota)
@@ -838,17 +877,14 @@ function Test-TIDataFolder {
 
 # ---------------------------------------------------------------------
 # Configurações. Tudo é aplicado só no "Salvar" (Enter também salva);
-# Esc ou X descartam as mudanças.
+# Esc ou X descartam as mudanças. "Abrir pasta de logs" usa o Open-TILogFolder
+# do 03-Logging (no WinPE, o console de hoje no Bloco de notas).
+# Só aparece o que vale no modo: as opções de Contas só com a área Contas
+# registrada; "Texto nítido" (escala de tela) não existe no WinPE.
 # ---------------------------------------------------------------------
-function Open-TILogFolder {
-    $dir = Split-Path -Parent $global:TILogPath
-    try { if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null } } catch { }
-    if (Test-Path -LiteralPath $dir) {
-        try { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $dir) }
-        catch { Show-TIToast -Text ('Não foi possível abrir a pasta: {0}' -f $dir) -Type 'Error' }
-    } else {
-        Show-TIToast -Text 'A pasta de logs não existe e não pôde ser criada (pasta somente leitura?).' -Type 'Warn'
-    }
+function Test-TIWorkspaceRegistered {
+    param([string]$Id)
+    return (@($global:TI.Workspaces | Where-Object { $_.Id -eq $Id }).Count -gt 0)
 }
 
 function Show-TISettings {
@@ -884,14 +920,19 @@ function Show-TISettings {
     $btnX.BringToFront()
 
     $y = 64
+    $hasContas = Test-TIWorkspaceRegistered 'contas'
     $rows = @(
         @{ Key = 'CompactConsole'; Title = 'Iniciar com o console recolhido'
-           Desc = 'Mais espaço para as ferramentas. Mostre ou oculte com F12.' },
-        @{ Key = 'ForceChangeOnLogon'; Title = 'Exigir troca de senha no próximo login'
-           Desc = 'Na senha padrão em lote, cada aluno define a própria senha ao entrar.' },
-        @{ Key = 'CrispText'; Title = 'Texto nítido em telas com zoom (125% ou mais)'
-           Desc = 'Pode desalinhar o layout em notebooks com escala. Vale a partir da próxima abertura.' }
+           Desc = 'Mais espaço para as ferramentas. Mostre ou oculte com F12.' }
     )
+    if ($hasContas) {
+        $rows += @{ Key = 'ForceChangeOnLogon'; Title = 'Exigir troca de senha no próximo login'
+                    Desc = 'Na senha padrão em lote, cada aluno define a própria senha ao entrar.' }
+    }
+    if (-not $global:TIWinPE) {
+        $rows += @{ Key = 'CrispText'; Title = 'Texto nítido em telas com zoom (125% ou mais)'
+                    Desc = 'Pode desalinhar o layout em notebooks com escala. Vale a partir da próxima abertura.' }
+    }
     foreach ($r in $rows) {
         $lbl = New-TILabel -Text $r.Title -Size 9.5 -Bold
         $lbl.Location = New-Object System.Drawing.Point($padX, $y)
@@ -914,40 +955,48 @@ function Show-TISettings {
         $y += $hRow + 8
     }
 
-    $pwLbl = New-TILabel -Text 'Senha padrão da escola (só nesta sessão)' -Size 9.5 -Bold
-    $pwLbl.Location = New-Object System.Drawing.Point($padX, $y)
-    $f.Controls.Add($pwLbl)
+    # Senha padrão da escola: só serve para a área Contas (não existe no modo recuperação)
+    if ($hasContas) {
+        $pwLbl = New-TILabel -Text 'Senha padrão da escola (só nesta sessão)' -Size 9.5 -Bold
+        $pwLbl.Location = New-Object System.Drawing.Point($padX, $y)
+        $f.Controls.Add($pwLbl)
 
-    $pwDesc = New-TILabel -Text 'Usada na senha padrão em lote das contas de aluno. Fica só na memória: nunca é gravada no pendrive.' -Size 8 -Muted
-    $pwDesc.Location = New-Object System.Drawing.Point($padX, ($y + 20))
-    $pwDesc.MaximumSize = New-Object System.Drawing.Size(($w - $padX * 2), 0)
-    $pwDesc.AutoSize = $true
-    $f.Controls.Add($pwDesc)
+        $pwDesc = New-TILabel -Text 'Usada na senha padrão em lote das contas de aluno. Fica só na memória: nunca é gravada no pendrive.' -Size 8 -Muted
+        $pwDesc.Location = New-Object System.Drawing.Point($padX, ($y + 20))
+        $pwDesc.MaximumSize = New-Object System.Drawing.Size(($w - $padX * 2), 0)
+        $pwDesc.AutoSize = $true
+        $f.Controls.Add($pwDesc)
 
-    $pwBox = New-Object System.Windows.Forms.TextBox
-    $pwBox.Location = New-Object System.Drawing.Point($padX, ($y + $pwDesc.PreferredHeight + 28))
-    $pwBox.Size = New-Object System.Drawing.Size(($w - $padX * 2), 28)
-    $pwBox.BackColor = $global:Pal.Bg
-    $pwBox.ForeColor = $global:Pal.TextMain
-    $pwBox.BorderStyle = 'FixedSingle'
-    $pwBox.Font = New-TIFont 10
-    $pwBox.UseSystemPasswordChar = $true
-    $pwBox.Text = [string]$global:TI.Settings['SchoolPassword']
-    $f.Controls.Add($pwBox)
-    $state.Pw = $pwBox
+        $pwBox = New-Object System.Windows.Forms.TextBox
+        $pwBox.Location = New-Object System.Drawing.Point($padX, ($y + $pwDesc.PreferredHeight + 28))
+        $pwBox.Size = New-Object System.Drawing.Size(($w - $padX * 2), 28)
+        $pwBox.BackColor = $global:Pal.Bg
+        $pwBox.ForeColor = $global:Pal.TextMain
+        $pwBox.BorderStyle = 'FixedSingle'
+        $pwBox.Font = New-TIFont 10
+        $pwBox.UseSystemPasswordChar = $true
+        $pwBox.Text = [string]$global:TI.Settings['SchoolPassword']
+        $f.Controls.Add($pwBox)
+        $state.Pw = $pwBox
 
-    $y = $pwBox.Bottom + 18
+        $y = $pwBox.Bottom + 18
+    }
 
     # Onde fica cada coisa e quem está usando
-    $modeLine = if ($global:TIPortable) { 'Modo portátil (USB)' } else { 'Modo instalado' }
-    $session = if ($global:TI.SessionUser) { [string]$global:TI.SessionUser } else { 'não identificada' }
     $lines = New-Object System.Collections.ArrayList
-    [void]$lines.Add(('{0}   |   PC: {1}' -f $modeLine, $env:COMPUTERNAME))
-    [void]$lines.Add(('Operador (rodando o TI Suite): {0}' -f (Get-TIOperatorName)))
-    [void]$lines.Add(('Sessão (conectado ao Windows): {0}' -f $session))
+    if ($global:TIWinPE) {
+        # No WinPE não há sessão do Windows; o PC atendido é o da instalação escolhida na Recuperação
+        [void]$lines.Add(('{0}   |   pendrive: {1}' -f (Get-TIModeText), $global:TIRoot))
+        [void]$lines.Add(('Operador (rodando o TI Suite): {0}' -f (Get-TIOperatorName)))
+    } else {
+        $session = if ($global:TI.SessionUser) { [string]$global:TI.SessionUser } else { 'não identificada' }
+        [void]$lines.Add(('{0}   |   PC: {1}' -f (Get-TIModeText), $env:COMPUTERNAME))
+        [void]$lines.Add(('Operador (rodando o TI Suite): {0}' -f (Get-TIOperatorName)))
+        [void]$lines.Add(('Sessão (conectado ao Windows): {0}' -f $session))
+    }
     [void]$lines.Add(('Configuração: {0}' -f $global:TI.SettingsPath))
     [void]$lines.Add(('Logs e auditoria: {0}' -f (Split-Path -Parent $global:TILogPath)))
-    if (Get-Command Get-TIInventoryPath -ErrorAction SilentlyContinue) {
+    if ((Test-TIWorkspaceRegistered 'inventario') -and (Get-Command Get-TIInventoryPath -ErrorAction SilentlyContinue)) {
         try { [void]$lines.Add(('Inventário: {0}' -f (Get-TIInventoryPath))) } catch { }
     }
     $info = New-TILabel -Text ($lines -join "`n") -Size 8 -Dim
@@ -957,8 +1006,13 @@ function Show-TISettings {
     $f.Controls.Add($info)
     $y += $info.PreferredHeight + 10
 
-    $btnLogs = New-TIButton -Text 'Abrir pasta de logs' -Style 'Outline' -Icon 'FolderOpen' -Width 170 -Height 32 `
-                            -Tip 'audit.csv, exceptions.log e os registros do console'
+    if ($global:TIWinPE) {
+        $btnLogs = New-TIButton -Text 'Ver o log de hoje' -Style 'Outline' -Icon 'Document' -Width 170 -Height 32 `
+                                -Tip 'Abre no Bloco de notas o console salvo de hoje; Arquivo > Abrir mostra a auditoria e os outros dias'
+    } else {
+        $btnLogs = New-TIButton -Text 'Abrir pasta de logs' -Style 'Outline' -Icon 'FolderOpen' -Width 170 -Height 32 `
+                                -Tip 'audit.csv, exceptions.log e os registros do console'
+    }
     $btnLogs.Location = New-Object System.Drawing.Point($padX, $y)
     $btnLogs.Add_Click({ Open-TILogFolder })
     $f.Controls.Add($btnLogs)
@@ -987,7 +1041,7 @@ function Show-TISettings {
         $fm = $this.FindForm()
         $st = $fm.Tag
         foreach ($k in @($st.Switches.Keys)) { $global:TI.Settings[$k] = [bool]$st.Switches[$k].Checked }
-        $global:TI.Settings['SchoolPassword'] = $st.Pw.Text
+        if ($st.Pw) { $global:TI.Settings['SchoolPassword'] = $st.Pw.Text }
         if (Save-TISettings) { Show-TIToast -Text 'Configurações salvas.' -Type 'Success' }
         $fm.DialogResult = 'OK'
         $fm.Close()
@@ -1044,9 +1098,15 @@ function New-TIShortcutsForm {
     $btnX.Add_Click({ $this.FindForm().Close() })
     $f.Controls.Add($btnX)
 
+    # Atalhos conforme as áreas registradas no modo (normal: Ctrl+1 a Ctrl+8; recuperação: Ctrl+1 e Ctrl+2)
     $nAreas = [Math]::Max(1, [Math]::Min(9, @($global:TI.Workspaces).Count))
+    $areaKeys = switch ($nAreas) {
+        1       { 'Ctrl+1' }
+        2       { 'Ctrl+1 e Ctrl+2' }
+        default { 'Ctrl+1 a Ctrl+{0}' -f $nAreas }
+    }
     $rows = @(
-        @(('Ctrl+1 a Ctrl+{0}' -f $nAreas), 'Abrir as áreas, na ordem da barra lateral'),
+        @($areaKeys, 'Abrir as áreas, na ordem da barra lateral'),
         @('Ctrl+F', 'Buscar ferramenta (com ou sem acento); Enter abre a primeira encontrada'),
         @('Ctrl+R ou F5', 'Atualizar a área aberta'),
         @("F12 ou Ctrl+'", 'Mostrar ou ocultar o console'),
@@ -1143,27 +1203,32 @@ function Update-TIMaxButton {
 }
 
 # Tamanho inicial dentro da área útil do monitor do mouse (1366x768 cabe inteiro);
-# tela pequena demais ou "WindowMaximized" salvo: abre maximizada.
+# tela pequena demais ou "WindowMaximized" salvo: abre maximizada. No WinPE abre
+# sempre maximizada (tela inteira: não há barra de tarefas).
 function Set-TIInitialBounds {
     $fm = $global:Form
     try {
         $wa = [System.Windows.Forms.Screen]::FromPoint([System.Windows.Forms.Cursor]::Position).WorkingArea
-        $minW = [Math]::Min(1040, $wa.Width)
-        $minH = [Math]::Min(640, $wa.Height)
+        $baseMin = if ($global:TIMinSize) { $global:TIMinSize } else { New-Object System.Drawing.Size(1040, 640) }
+        $minW = [Math]::Min($baseMin.Width, $wa.Width)
+        $minH = [Math]::Min($baseMin.Height, $wa.Height)
         $fm.MinimumSize = New-Object System.Drawing.Size($minW, $minH)
         $w = [Math]::Min(1252, $wa.Width - 24)
         $h = [Math]::Min(792, $wa.Height - 24)
-        $small = ($w -lt 1040 -or $h -lt 640)
+        $small = ($w -lt $baseMin.Width -or $h -lt $baseMin.Height)
         $w = [Math]::Max($minW, $w)
         $h = [Math]::Max($minH, $h)
         $fm.StartPosition = 'Manual'
         $fm.Bounds = New-Object System.Drawing.Rectangle(($wa.X + [int](($wa.Width - $w) / 2)), ($wa.Y + [int](($wa.Height - $h) / 2)), $w, $h)
-        if ($small -or $global:TI.Settings.WindowMaximized) { $fm.WindowState = 'Maximized' }
+        if ($global:TIWinPE -or $small -or $global:TI.Settings.WindowMaximized) { $fm.WindowState = 'Maximized' }
     } catch { }
 }
 
-# Lembra janela maximizada e altura do console (só grava se mudou)
+# Lembra janela maximizada e altura do console (só grava se mudou). No WinPE não
+# grava: a janela é sempre maximizada lá, e o config.json do pendrive é o mesmo
+# do modo normal.
 function Save-TIWindowState {
+    if ($global:TIWinPE) { return }
     try {
         if ($global:Form.WindowState -eq 'Minimized') { return }
         $changed = $false
@@ -1197,6 +1262,11 @@ function Test-TICanClose {
 $global:Form.Add_Resize({
     $fm = $global:Form
     if ($null -eq $fm) { return }
+    # WinPE: sem barra de tarefas, minimizada (Alt+Espaço) não voltaria; volta já maximizada
+    if ($global:TIWinPE -and $fm.WindowState -eq 'Minimized') {
+        try { [void]$fm.BeginInvoke([System.Windows.Forms.MethodInvoker]{ $global:Form.WindowState = 'Maximized' }) } catch { }
+        return
+    }
     try {
         # Maximizada: sem recorte. Minimizada: não mexe (o recorte do tamanho
         # minimizado deixava a janela invisível ao restaurar).
@@ -1230,32 +1300,68 @@ $global:Form.Add_FormClosing({
 # ---------------------------------------------------------------------
 # Inicialização chamada após o registro das áreas de trabalho
 # ---------------------------------------------------------------------
+# Selo da barra lateral. Modo normal: "Administrador" ou "Sem elevação" (clique reabre
+# elevado). Modo recuperação: "Recuperação (WinPE)" (sem ação: já é SYSTEM) ou
+# "Recuperação" num Windows comum (a cor diz se está elevado; o clique reabre elevado).
 function Update-TIElevationBadge {
     $col = if ($global:TI.Elevated) { $global:Pal.Success } else { $global:Pal.Warning }
-    $txt = if ($global:TI.Elevated) { 'Administrador' } else { 'Sem elevação' }
-    $tip = if ($global:TI.Elevated) { 'Aberto como administrador: todas as ações liberadas' } else { 'Clique para reabrir como administrador' }
+    if ($global:TIRecovery) {
+        $icon = 'Repair'
+        if ($global:TIWinPE) {
+            $txt = 'Recuperação (WinPE)'
+            $tip = 'Modo recuperação no WinPE do pendrive, com permissão total'
+        } else {
+            $txt = 'Recuperação'
+            $tip = if ($global:TI.Elevated) { 'Modo recuperação, aberto como administrador: todas as ações liberadas' }
+                   else { 'Modo recuperação sem elevação: clique para reabrir como administrador' }
+        }
+    } else {
+        $icon = 'Shield'
+        $txt = if ($global:TI.Elevated) { 'Administrador' } else { 'Sem elevação' }
+        $tip = if ($global:TI.Elevated) { 'Aberto como administrador: todas as ações liberadas' } else { 'Clique para reabrir como administrador' }
+    }
+    $global:AdminBadgeIcon.Text = Get-TIGlyph $icon
     $global:AdminBadgeIcon.ForeColor = $col
     $global:AdminBadgeText.ForeColor = $col
     $global:AdminBadgeText.Text = $txt
-    foreach ($c in @($global:AdminBadge, $global:AdminBadgeIcon, $global:AdminBadgeText)) { $global:TITip.SetToolTip($c, $tip) }
+    # Largura pelo texto, sem encostar no botão de configurações
+    try { $global:AdminBadge.Width = [Math]::Max(150, [Math]::Min(162, (29 + $global:AdminBadgeText.PreferredWidth + 10))) } catch { }
+    $hand = if ($global:TIWinPE) { [System.Windows.Forms.Cursors]::Default } else { [System.Windows.Forms.Cursors]::Hand }
+    foreach ($c in @($global:AdminBadge, $global:AdminBadgeIcon, $global:AdminBadgeText)) {
+        $global:TITip.SetToolTip($c, $tip)
+        $c.Cursor = $hand
+    }
 }
 
 function Start-TIApp {
-    $global:TI.Elevated = Test-TIIsAdmin
+    # WinPE: o processo é sempre o SYSTEM do próprio WinPE (permissão total), mesmo que
+    # a consulta ao grupo Administradores falhe lá
+    $global:TI.Elevated = ([bool]$global:TIWinPE -or (Test-TIIsAdmin))
     $su = Get-TISessionUser
     $global:TI.SessionUser = [string]$su.Name
     $global:TI.SessionUserSid = [string]$su.Sid
     Update-TIElevationBadge
     Build-TISidebar
 
-    Write-TILog -Level 'Info' -Message ("TI Suite v{0} aberto em {1}." -f $global:TI.Version, $env:COMPUTERNAME)
-    if ($global:TI.Elevated) {
+    if ($global:TIWinPE) {
+        Write-TILog -Level 'Info' -Message ("TI Suite v{0} aberto no modo recuperação (WinPE do pendrive)." -f $global:TI.Version)
+    } elseif ($global:TIRecovery) {
+        Write-TILog -Level 'Info' -Message ("TI Suite v{0} aberto no modo recuperação em {1} (teste num Windows comum)." -f $global:TI.Version, $env:COMPUTERNAME)
+    } else {
+        Write-TILog -Level 'Info' -Message ("TI Suite v{0} aberto em {1}." -f $global:TI.Version, $env:COMPUTERNAME)
+    }
+    if ($global:TIWinPE) {
+        Write-TILog -Level 'Debug' -Message ("WinPE: rodando como {0}, todas as ações liberadas." -f (Get-TIOperatorName))
+    } elseif ($global:TI.Elevated) {
         Write-TILog -Level 'Success' -Message 'Aberto como administrador: todas as ações liberadas.'
     } else {
-        Write-TILog -Level 'Warn' -Message 'Sem elevação: as ações administrativas ficam bloqueadas. Clique no selo "Sem elevação" para reabrir como administrador.'
+        $seal = if ($global:TIRecovery) { 'Recuperação' } else { 'Sem elevação' }
+        Write-TILog -Level 'Warn' -Message ('Sem elevação: as ações administrativas ficam bloqueadas. Clique no selo "{0}" para reabrir como administrador.' -f $seal)
     }
     $op = Get-TIOperatorName
-    if ($global:TI.SessionUser -and $global:TI.SessionUser -ne $op) {
+    if ($global:TIWinPE) {
+        # Sem sessão do Windows no WinPE: nada a comparar
+    } elseif ($global:TI.SessionUser -and $global:TI.SessionUser -ne $op) {
         Write-TILog -Level 'Info' -Message ("Conectado ao Windows: {0} (o TI Suite roda como {1})." -f $global:TI.SessionUser, $op)
     } else {
         Write-TILog -Level 'Debug' -Message ("Sessão do Windows: {0} ({1})." -f $global:TI.SessionUser, $global:TI.SessionUserSid)
@@ -1264,13 +1370,17 @@ function Start-TIApp {
     if ($global:TIControlsError) {
         Write-TILog -Level 'Debug' -Message ("A DLL dos controles não foi usada: {0}" -f $global:TIControlsError)
     }
-    if ($global:TIPortable) {
+    if ($global:TIWinPE) {
+        Write-TILog -Level 'Info' -Message ('Modo recuperação (WinPE): configuração, logs e laudos ficam no pendrive, em {0}.' -f $global:TIRoot)
+    } elseif ($global:TIPortable) {
         Write-TILog -Level 'Info' -Message 'Modo portátil (USB): configuração, logs e inventário ficam na pasta do aplicativo.'
     }
     Test-TIDataFolder
 
     if ($global:TI.Workspaces.Count -gt 0) {
         Switch-TIWorkspace -Id $global:TI.Workspaces[0].Id
+    } elseif ($global:TIRecovery) {
+        Write-TILog -Level 'Error' -Message 'Nenhuma ferramenta de recuperação encontrada (src\Workspaces\Recuperacao.ps1 e Backup.ps1). Copie de novo a pasta completa do TI Suite para o pendrive.'
     }
     Apply-TIConsolePreference
     Set-TIInitialBounds

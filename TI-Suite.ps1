@@ -4,6 +4,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\TI-Suite.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\TI-Suite.ps1 -SelfTest
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\TI-Suite.ps1 -NoElevate
+#   powershell -NoProfile -ExecutionPolicy Bypass -File .\TI-Suite.ps1 -Recovery      (modo recuperação; no WinPE liga sozinho)
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\TI-Suite.ps1 -SkipIntegrity   (desenvolvimento)
 # Códigos de saída: 0 = normal; 1 = erro já explicado na tela;
 #                   3 = a política do computador bloqueia scripts (o Iniciar.cmd explica).
@@ -15,6 +16,9 @@ param(
     [switch]$SelfTest,
     [switch]$NoElevate,
     [switch]$SkipIntegrity,
+    # Modo recuperação (pendrive de boot): só as áreas de recuperação e backup.
+    # No WinPE liga sozinho; num Windows comum serve para testar a interface.
+    [switch]$Recovery,
     # Interno: reaberto pelo selo "Sem elevação"; espera a janela anterior fechar
     [switch]$Reopen
 )
@@ -36,6 +40,25 @@ $global:TISkipIntegrity = $SkipIntegrity.IsPresent
 try { Set-Location -LiteralPath $script:TIRoot } catch { }
 
 # ---------------------------------------------------------------------
+# Modo recuperação. $global:TIWinPE = rodando no WinPE do pendrive de boot
+# (chave MiniNT); $global:TIRecovery = WinPE ou -Recovery. Definidos antes de
+# carregar src\: as áreas se registram conforme o modo (Register-TIWorkspace -Modes).
+# ---------------------------------------------------------------------
+$global:TIWinPE = $false
+$global:TIStartupErrorText = $null
+try { $global:TIWinPE = [bool](Test-Path -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT' -ErrorAction Stop) } catch { $global:TIWinPE = $false }
+$global:TIRecovery = ($Recovery.IsPresent -or $global:TIWinPE)
+# Título da janela: também é o que a segunda abertura procura para trazer a janela à frente
+$global:TIWindowTitle = if ($global:TIRecovery) { 'TI Suite — Recuperação' } else { 'TI Suite' }
+
+# powershell.exe pelo caminho completo (no WinPE a pasta dele pode não estar no PATH)
+$global:TIPowerShellExe = 'powershell.exe'
+try {
+    $pse = Join-Path $PSHOME 'powershell.exe'
+    if (Test-Path -LiteralPath $pse) { $global:TIPowerShellExe = $pse }
+} catch { }
+
+# ---------------------------------------------------------------------
 # Escopo global e STA. Os handlers de eventos (.GetNewClosure()) só enxergam
 # funções do escopo global: com "powershell -File" (Iniciar.cmd) o script já
 # roda nele; chamado como .\TI-Suite.ps1 num console aberto, não. WinForms
@@ -53,9 +76,10 @@ if (-not $relaunched -and (-not $inGlobalScope -or [System.Threading.Thread]::Cu
     if ($SelfTest) { $reArgs += ' -SelfTest' }
     if ($NoElevate) { $reArgs += ' -NoElevate' }
     if ($SkipIntegrity) { $reArgs += ' -SkipIntegrity' }
+    if ($global:TIRecovery) { $reArgs += ' -Recovery' }
     if ($Reopen) { $reArgs += ' -Reopen' }
     try {
-        $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $reArgs -Wait -NoNewWindow -PassThru
+        $p = Start-Process -FilePath $global:TIPowerShellExe -ArgumentList $reArgs -Wait -NoNewWindow -PassThru
         exit $(if ($p) { $p.ExitCode } else { 1 })
     } catch {
         Write-Host 'Não foi possível reabrir o TI Suite no modo certo (STA). Use o Iniciar.cmd.' -ForegroundColor Red
@@ -67,12 +91,14 @@ if (-not $relaunched -and (-not $inGlobalScope -or [System.Threading.Thread]::Cu
 # Modo portátil: se portable.config existir ao lado do script,
 # configurações, logs e inventário ficam na própria pasta (rodar de USB).
 # -LiteralPath: pasta com colchetes no nome ("TI [2024]") não é curinga.
+# No WinPE é sempre portátil: a pasta do app está na partição TI-SUITE do
+# pendrive, e o %LOCALAPPDATA% do WinPE fica na memória (X:) e some ao desligar.
 # ---------------------------------------------------------------------
-$global:TIPortable = (Test-Path -LiteralPath (Join-Path $script:TIRoot 'portable.config'))
+$global:TIPortable = ($global:TIWinPE -or (Test-Path -LiteralPath (Join-Path $script:TIRoot 'portable.config')))
 
 # Única regra de pastas do app: portátil = pasta do app; instalado = %LOCALAPPDATA%\TI-Suite
 function Get-TIAppDataDir {
-    if ($global:TIPortable) { return $global:TIRoot }
+    if ($global:TIPortable -or -not $env:LOCALAPPDATA) { return $global:TIRoot }
     return (Join-Path $env:LOCALAPPDATA 'TI-Suite')
 }
 
@@ -87,11 +113,19 @@ if (-not $global:TI) { $global:TI = @{} }
 $global:TI.SettingsPath = Join-Path (Get-TIAppDataDir) 'config.json'
 
 # Pasta copiada da internet: remove a marca de download para o Windows não bloquear
-try {
-    Get-ChildItem -LiteralPath $script:TIRoot -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -match '^\.(ps1|cmd|json|config|dll|cs|stamp)$' } |
-        Unblock-File -ErrorAction SilentlyContinue
-} catch { }
+# (sem ela o .NET recusa carregar a DLL dos controles). Só nos arquivos do programa
+# (raiz, src\, bin\ e dev\): os dados de campo, como backup\, podem ser enormes.
+if (Get-Command Unblock-File -ErrorAction SilentlyContinue) {
+    try {
+        $codeFiles = @(Get-ChildItem -LiteralPath $script:TIRoot -File -ErrorAction SilentlyContinue)
+        foreach ($sub in @('src', 'bin', 'dev')) {
+            $subPath = Join-Path $script:TIRoot $sub
+            if (Test-Path -LiteralPath $subPath) { $codeFiles += @(Get-ChildItem -LiteralPath $subPath -Recurse -File -ErrorAction SilentlyContinue) }
+        }
+        $codeFiles | Where-Object { $_.Extension -match '^\.(ps1|cmd|json|config|dll|cs|stamp)$' } |
+            Unblock-File -ErrorAction SilentlyContinue
+    } catch { }
+}
 
 # ---------------------------------------------------------------------
 # Integridade: se manifest.sha256 existir (gerado por dev\Build-Release.ps1),
@@ -157,6 +191,7 @@ function Get-TIElevatedArgs {
     param([switch]$Reopen)
     $a = '-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f (Get-TILaunchPath)
     if ($global:TISkipIntegrity) { $a += ' -SkipIntegrity' }
+    if ($global:TIRecovery) { $a += ' -Recovery' }
     if ($Reopen) { $a += ' -Reopen' }
     return $a
 }
@@ -173,7 +208,9 @@ function Test-TIElevatedStart {
     } catch { return $true }
 }
 
-$script:TIMutexName = 'Local\TISuite'
+# O modo recuperação tem instância própria: dá para testá-lo (-Recovery) com o normal aberto.
+# No WinPE o mutex também vale: evita duas janelas reparando o mesmo disco.
+$script:TIMutexName = if ($global:TIRecovery) { 'Local\TISuite-Recuperacao' } else { 'Local\TISuite' }
 
 # Outra janela do TI Suite nesta sessão? (sem tomar posse; sem acesso = existe e é elevada)
 function Test-TIOtherInstance {
@@ -229,17 +266,19 @@ function Show-TIOtherInstance {
 [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
 '@
         }
-        $h = [TISuiteEntry.Win]::FindWindow([NullString]::Value, 'TI Suite')
+        $h = [TISuiteEntry.Win]::FindWindow([NullString]::Value, $global:TIWindowTitle)
         if ($h -ne [IntPtr]::Zero) {
             if ([TISuiteEntry.Win]::IsIconic($h)) { [void][TISuiteEntry.Win]::ShowWindowAsync($h, 9) }   # SW_RESTORE
             $shown = [TISuiteEntry.Win]::SetForegroundWindow($h)
         }
     } catch { }
     if (-not $shown) {
+        # WinPE: não há barra de tarefas (e o Add-Type acima não compila sem o compilador C#)
+        $where = if ($global:TIWinPE) { 'Use a janela que já está aberta.' } else { 'Use a janela que já está aberta (procure na barra de tarefas).' }
         try {
             Add-Type -AssemblyName System.Windows.Forms
             [void][System.Windows.Forms.MessageBox]::Show(
-                "O TI Suite já está aberto neste computador.`n`nUse a janela que já está aberta (procure na barra de tarefas).",
+                ("O TI Suite já está aberto neste computador.`n`n{0}" -f $where),
                 'TI Suite', 'OK', 'Information')
         } catch { Write-Host 'O TI Suite já está aberto neste computador.' -ForegroundColor Yellow }
     }
@@ -253,10 +292,11 @@ if ($useMutex -and -not $Reopen -and (Test-TIOtherInstance)) {
     exit 0
 }
 
-if (-not $SelfTest -and -not $NoElevate -and -not (Test-TIIsAdmin)) {
+# No WinPE o processo já roda como SYSTEM: nada de UAC
+if (-not $SelfTest -and -not $NoElevate -and -not $global:TIWinPE -and -not (Test-TIIsAdmin)) {
     $elevated = $false
     try {
-        $proc = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList (Get-TIElevatedArgs -Reopen:$Reopen) -PassThru -ErrorAction Stop
+        $proc = Start-Process -FilePath $global:TIPowerShellExe -Verb RunAs -ArgumentList (Get-TIElevatedArgs -Reopen:$Reopen) -PassThru -ErrorAction Stop
         $elevated = $true
     } catch { }
     if ($elevated) {
@@ -273,13 +313,19 @@ if (-not $SelfTest -and -not $NoElevate -and -not (Test-TIIsAdmin)) {
     }
     # UAC recusado (ou sem a senha de administrador): oferece o modo consulta
     $answer = 'No'
+    $what = if ($global:TIRecovery) {
+        "Abrir o modo recuperação só para consulta? A lista de instalações do Windows aparece; " +
+        "os reparos e o backup ficam bloqueados.`n`n" +
+        "Para liberar tudo depois, clique no selo ""Recuperação"" da barra lateral."
+    } else {
+        "Abrir o TI Suite só para consulta? Início, Saúde do PC, Rede e Inventário funcionam; " +
+        "as ações que mudam o computador ficam bloqueadas.`n`n" +
+        "Para liberar tudo depois, clique no selo ""Sem elevação"" da barra lateral."
+    }
     try {
         Add-Type -AssemblyName System.Windows.Forms
         $answer = [System.Windows.Forms.MessageBox]::Show(
-            ("O Windows não liberou o modo administrador (UAC).`n`n" +
-             "Abrir o TI Suite só para consulta? Início, Saúde do PC, Rede e Inventário funcionam; " +
-             "as ações que mudam o computador ficam bloqueadas.`n`n" +
-             "Para liberar tudo depois, clique no selo ""Sem elevação"" da barra lateral."),
+            ("O Windows não liberou o modo administrador (UAC).`n`n" + $what),
             'TI Suite - elevação', 'YesNo', 'Question')
     } catch { }
     if ([string]$answer -ne 'Yes') { exit 0 }
@@ -306,7 +352,8 @@ function Write-TIUnexpectedError {
     try {
         if ($global:Form -and $global:Form.InvokeRequired) { return }   # outra thread: fica só no arquivo
         if (Get-Command Write-TILog -ErrorAction SilentlyContinue) {
-            Write-TILog -Level 'Error' -Message ('Erro inesperado: {0} (detalhes no exceptions.log: Configurações > Abrir pasta de logs).' -f $Message)
+            $where = if ($global:TIWinPE) { 'logs\exceptions.log do pendrive' } else { 'exceptions.log: Configurações > Abrir pasta de logs' }
+            Write-TILog -Level 'Error' -Message ('Erro inesperado: {0} (detalhes no {1}).' -f $Message, $where)
         }
         $now = Get-Date
         if ($global:Form -and $global:Form.Visible -and (Get-Command Show-TIToast -ErrorAction SilentlyContinue) -and
@@ -350,10 +397,15 @@ try {
     . (Join-Path $core '02-Dialogs.ps1')
     . (Join-Path $core '03-Logging.ps1')
     . (Join-Path $core '04-Async.ps1')
+    # Núcleo do Windows instalado no disco (recuperação e backup): opcional até existir
+    $winCore = Join-Path $core '06-Windows.ps1'
+    if (Test-Path -LiteralPath $winCore) { . $winCore }
     . (Join-Path $core '05-Shell.ps1')
     . (Join-Path $core '99-SelfTest.ps1')
 
-    # A ordem aqui é a ordem da barra lateral e dos atalhos Ctrl+1 a Ctrl+7
+    # A ordem aqui é a ordem da barra lateral e dos atalhos Ctrl+1 a Ctrl+N. Cada área diz
+    # em que modo aparece (Register-TIWorkspace -Modes): normal = Início..Inventário e
+    # Backup; recuperação = Recuperação e Backup.
     . (Join-Path $wsp 'Dashboard.ps1')
     . (Join-Path $wsp 'Saude.ps1')
     . (Join-Path $wsp 'Limpeza.ps1')
@@ -361,26 +413,38 @@ try {
     . (Join-Path $wsp 'Contas.ps1')
     . (Join-Path $wsp 'Rede.ps1')
     . (Join-Path $wsp 'Inventario.ps1')
+    $wsRecovery = Join-Path $wsp 'Recuperacao.ps1'
+    if (Test-Path -LiteralPath $wsRecovery) { . $wsRecovery }
+    $wsBackup = Join-Path $wsp 'Backup.ps1'
+    if (Test-Path -LiteralPath $wsBackup) { . $wsBackup }
 
     Start-TIApp
 } catch {
     $msg = $_ | Out-String
+    $crashFile = $null
     try {
         $crashDir = Split-Path -Parent $global:TILogPath
         if (-not (Test-Path -LiteralPath $crashDir)) { New-Item -ItemType Directory -Path $crashDir -Force | Out-Null }
-        $msg | Set-Content -LiteralPath (Join-Path $crashDir 'crash.log') -Encoding UTF8
+        $crashFile = Join-Path $crashDir 'crash.log'
+        $msg | Set-Content -LiteralPath $crashFile -Encoding UTF8
     } catch { }
+    # Erro já explicado em português (ex.: controles visuais sem compilador no WinPE): só o texto
+    $shownMsg = "O TI Suite não conseguiu abrir:`n`n" + $msg
+    if ($global:TIStartupErrorText) {
+        $shownMsg = [string]$global:TIStartupErrorText
+        if ($crashFile) { $shownMsg += ("`n`nDetalhes técnicos: {0}" -f $crashFile) }
+    }
     try {
         if ($env:TI_SUITE_QUIET -ne '1') {
             Add-Type -AssemblyName System.Windows.Forms
             [void][System.Windows.Forms.MessageBox]::Show(
-                ("O TI Suite não conseguiu abrir:`n`n" + $msg),
+                $shownMsg,
                 'TI Suite - erro ao abrir', 'OK', 'Error')
         } else {
-            Write-Host $msg -ForegroundColor Red
+            Write-Host $shownMsg -ForegroundColor Red
         }
     } catch {
-        Write-Host $msg -ForegroundColor Red
+        Write-Host $shownMsg -ForegroundColor Red
     }
     Exit-TISingleInstance
     exit 1

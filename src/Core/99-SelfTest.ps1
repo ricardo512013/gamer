@@ -38,6 +38,8 @@ function Invoke-TISelfTest {
 
     Write-Host ''
     Write-Host '==== TI Suite - autoverificação ====' -ForegroundColor Cyan
+    $modeName = if ($global:TIWinPE) { 'recuperação (WinPE)' } elseif ($global:TIRecovery) { 'recuperação' } else { 'normal' }
+    Write-Host ('     modo {0}' -f $modeName) -ForegroundColor Cyan
     Write-Host ''
 
     # 1. Sintaxe de todos os arquivos
@@ -78,16 +80,97 @@ function Invoke-TISelfTest {
 
     # 5. Janela montada
     Add-Check 'Janela principal criada' ($null -ne $global:Form)
+    $wantTitle = if ($global:TIRecovery) { 'TI Suite — Recuperação' } else { 'TI Suite' }
+    $minOk = if ($global:TIRecovery) { $global:Form.MinimumSize.Width -le 800 -and $global:Form.MinimumSize.Height -le 600 } else { $true }
+    Add-Check ('Janela do modo {0} (título e tamanho mínimo)' -f $modeName) ($global:Form.Text -eq $wantTitle -and $minOk) (
+        '"{0}", mínimo {1}x{2}' -f $global:Form.Text, $global:Form.MinimumSize.Width, $global:Form.MinimumSize.Height)
     Add-Check 'Barra lateral e navegação' ($null -ne $global:NavFlow -and $null -ne $global:HeaderTitle)
     Add-Check 'Console de log' ($null -ne $global:LogBox)
     Add-Check 'Barra de status' ($null -ne $global:StateLabel -and $null -ne $global:ProgressBar)
 
-    # 6. Áreas de trabalho
+    # 6. Áreas de trabalho (cada modo só com as suas: Register-TIWorkspace -Modes)
     $ids = @($global:TI.Workspaces | ForEach-Object { $_.Id })
-    Add-Check 'Áreas de trabalho registradas' (@($ids).Count -ge 7) ($ids -join ', ')
+    $normalOnly = @('dashboard', 'saude', 'limpeza', 'programas', 'contas', 'rede', 'inventario')
+    if ($global:TIRecovery) {
+        $wantRec = Test-Path -LiteralPath (Join-Path $global:TIRoot 'src\Workspaces\Recuperacao.ps1')
+        $okAreas = (@($ids | Where-Object { $normalOnly -contains $_ }).Count -eq 0) -and
+                   ((-not $wantRec) -or ($ids -contains 'recuperacao' -and $ids[0] -eq 'recuperacao'))
+        Add-Check 'Áreas do modo recuperação (Recuperação primeiro, nada do modo normal)' $okAreas ($ids -join ', ')
+    } else {
+        $okAreas = (@($ids).Count -ge 7) -and ($ids -notcontains 'recuperacao') -and ($ids[0] -eq 'dashboard')
+        Add-Check 'Áreas de trabalho registradas' $okAreas ($ids -join ', ')
+    }
+    $wrongMode = @($global:TI.Workspaces | Where-Object { $_.PSObject.Properties['Modes'] -and -not (Test-TIWorkspaceMode -Modes $_.Modes -Recovery ([bool]$global:TIRecovery)) })
+    Add-Check 'Nenhuma área de outro modo registrada' ($wrongMode.Count -eq 0) (($wrongMode | ForEach-Object { $_.Id }) -join ', ')
     Add-Check 'IDs sem duplicidade' ((@($ids | Select-Object -Unique)).Count -eq $ids.Count)
     Add-Check 'Itens da barra lateral' ($global:NavItems.Count -eq $ids.Count) ("{0} de {1}" -f $global:NavItems.Count, $ids.Count)
     Add-Check 'Todas as áreas sabem se atualizar (Ctrl+R)' (@($global:TI.Workspaces | Where-Object { -not $_.Refresh }).Count -eq 0)
+
+    # 6b. Registro por modo, simulado: troca a lista de áreas e o modo por um instante
+    #     e devolve tudo no finally (nada aparece na barra lateral)
+    $savedList = $global:TI.Workspaces
+    $savedRec = $global:TIRecovery
+    try {
+        $sim = @{}
+        foreach ($rec in @($false, $true)) {
+            $global:TIRecovery = $rec
+            $global:TI.Workspaces = New-Object System.Collections.ArrayList
+            Register-TIWorkspace -Id 'st-normal' -Title 'N' -Build { } -Refresh { }
+            Register-TIWorkspace -Id 'st-recup' -Title 'R' -Build { } -Refresh { } -Modes 'Recovery'
+            Register-TIWorkspace -Id 'st-ambos' -Title 'A' -Build { } -Refresh { } -Modes 'Both'
+            $sim[$rec] = (@($global:TI.Workspaces | ForEach-Object { $_.Id }) -join ',')
+        }
+        Add-Check 'Registro das áreas por modo (-Modes)' ($sim[$false] -eq 'st-normal,st-ambos' -and $sim[$true] -eq 'st-recup,st-ambos') (
+            'normal: {0} | recuperação: {1}' -f $sim[$false], $sim[$true])
+    } catch {
+        Add-Check 'Registro das áreas por modo (-Modes)' $false $_.Exception.Message
+    } finally {
+        $global:TI.Workspaces = $savedList
+        $global:TIRecovery = $savedRec
+    }
+
+    # 6c. No WinPE (sempre portátil), salvar vai direto para logs\ do app, sem "Salvar como":
+    #     simulado sem gravar arquivo (a pasta logs\ criada só para o teste é removida)
+    $savedPE = $global:TIWinPE
+    $savedPortable = $global:TIPortable
+    $peDir = Join-Path $global:TIRoot 'logs'
+    $peDirNew = -not (Test-Path -LiteralPath $peDir)
+    try {
+        $global:TIWinPE = $true
+        $global:TIPortable = $true
+        $pePath = Select-TISaveFile -FileName 'autoteste.txt' -Folder 'logs'
+        Add-Check 'WinPE: salvar grava direto em logs\ do app (simulado)' ($pePath -and (Split-Path -Parent $pePath) -eq $peDir -and (Split-Path -Leaf $pePath) -like 'autoteste*.txt') ([string]$pePath)
+    } catch {
+        Add-Check 'WinPE: salvar grava direto em logs\ do app (simulado)' $false $_.Exception.Message
+    } finally {
+        $global:TIWinPE = $savedPE
+        $global:TIPortable = $savedPortable
+        if ($peDirNew -and (Test-Path -LiteralPath $peDir) -and -not (Get-ChildItem -LiteralPath $peDir -Force -ErrorAction SilentlyContinue)) {
+            Remove-Item -LiteralPath $peDir -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # 6d. Núcleo do Windows no disco (06-Windows.ps1), quando presente: UI e worker
+    if (Test-Path -LiteralPath (Join-Path $global:TIRoot 'src\Core\06-Windows.ps1')) {
+        try {
+            $lblUi = [string](Get-TIWindowsLabel -ProductName 'Windows 10 Pro' -EditionId 'Professional' -Build 22631 -Ubr 4169 -DisplayVersion '23H2')
+            $wk = & {
+                function Emit { param([string]$Text, [string]$Level = 'Info', [int]$Progress = -1) }
+                . ([scriptblock]::Create($global:TIWorkerLib))
+                [pscustomobject]@{
+                    Label = [string](Get-TIWindowsLabel -ProductName 'Windows 10 Pro' -EditionId 'Professional' -Build 22631 -Ubr 4169 -DisplayVersion '23H2')
+                    Win10 = [string](Get-TIWindowsLabel -ProductName 'Windows 10 Pro' -EditionId 'Professional' -Build 19045 -Ubr 5011 -DisplayVersion '22H2')
+                    RcOk  = ((Get-TIRobocopyResult -ExitCode 1).Ok -and -not (Get-TIRobocopyResult -ExitCode 8).Ok)
+                    PE    = [bool](Get-Command Test-TIWinPE -ErrorAction SilentlyContinue)
+                }
+            }
+            Add-Check 'Windows 11 reconhecido pelo build (06-Windows)' ($lblUi -like '*Windows 11*' -and $wk.Label -like '*Windows 11*' -and $wk.Win10 -like '*Windows 10*') (
+                '{0} | {1}' -f $lblUi, $wk.Win10)
+            Add-Check 'Códigos do robocopy e Test-TIWinPE no worker (06-Windows)' ([bool]($wk.RcOk -and $wk.PE))
+        } catch {
+            Add-Check 'Núcleo do Windows no disco (06-Windows)' $false $_.Exception.Message
+        }
+    }
 
     # 7. Construção de cada área (sem disparar recargas automáticas)
     $global:TI.SuppressOnActivate = $true
@@ -139,13 +222,21 @@ function Invoke-TISelfTest {
             [void]$onKey.Invoke($global:Form, [object[]]@(, $ev))
         }
         $wsIds = @($global:TI.Workspaces | ForEach-Object { $_.Id })
-        $global:TI.SuppressOnActivate = $true
-        Switch-TIWorkspace -Id $wsIds[0]
-        & $sendKey ([int][System.Windows.Forms.Keys]::Control -bor [int][System.Windows.Forms.Keys]::D2)
-        $okCtrl2 = ($global:TI.ActiveId -eq $wsIds[1])
-        Switch-TIWorkspace -Id $wsIds[0]
-        $global:TI.SuppressOnActivate = $false
-        Add-Check 'Atalho Ctrl+2 troca de área' $okCtrl2
+        if ($wsIds.Count -ge 2) {
+            $global:TI.SuppressOnActivate = $true
+            Switch-TIWorkspace -Id $wsIds[0]
+            & $sendKey ([int][System.Windows.Forms.Keys]::Control -bor [int][System.Windows.Forms.Keys]::D2)
+            $okCtrl2 = ($global:TI.ActiveId -eq $wsIds[1])
+            # Atalho além da última área não faz nada
+            & $sendKey ([int][System.Windows.Forms.Keys]::Control -bor ([int][System.Windows.Forms.Keys]::D1 + [Math]::Min(8, $wsIds.Count)))
+            $okBeyond = ($wsIds.Count -ge 9) -or ($global:TI.ActiveId -eq $wsIds[1])
+            Switch-TIWorkspace -Id $wsIds[0]
+            $global:TI.SuppressOnActivate = $false
+            Add-Check 'Atalho Ctrl+2 troca de área' $okCtrl2
+            Add-Check ('Atalhos só até Ctrl+{0} (áreas do modo)' -f [Math]::Min(9, $wsIds.Count)) $okBeyond
+        } else {
+            Add-Check 'Atalho Ctrl+2 troca de área' ($global:TIRecovery -and $wsIds.Count -lt 2) ('{0} área(s) neste modo' -f $wsIds.Count)
+        }
 
         $c0 = $global:ConsoleCollapsed
         & $sendKey ([int][System.Windows.Forms.Keys]::F12)
