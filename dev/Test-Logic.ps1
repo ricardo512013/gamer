@@ -738,6 +738,10 @@ Assert-True  'diskpart: clean sem noerr' (($dp -contains 'clean') -and -not ($dp
 Assert-True  'diskpart: TI-BOOT FAT32 2 GB ativa' (($dp -contains 'create partition primary size=2048') -and ($dp -contains 'format fs=fat32 quick label="TI-BOOT"') -and ($dp -contains 'active'))
 Assert-True  'diskpart: TI-SUITE exFAT' ($dp -contains 'format fs=exfat quick label="TI-SUITE"')
 Assert-True  'diskpart: letra só depois de formatar' ([array]::IndexOf($dp, 'assign letter=R') -gt [array]::IndexOf($dp, 'format fs=fat32 quick label="TI-BOOT"'))
+# robustez em pendrive lento: cria as duas partições e dá rescan ANTES de formatar, com seleção explícita
+Assert-True  'diskpart: rescan antes do format' ([array]::IndexOf($dp, 'rescan') -gt [array]::IndexOf($dp, 'create partition primary') -and [array]::IndexOf($dp, 'rescan') -lt [array]::IndexOf($dp, 'format fs=fat32 quick label="TI-BOOT"'))
+Assert-True  'diskpart: seleciona a partição antes de formatar' (($dp -contains 'select partition 1') -and ($dp -contains 'select partition 2'))
+Assert-True  'diskpart: as duas partições criadas antes do rescan' ([array]::IndexOf($dp, 'rescan') -gt [array]::LastIndexOf($dp, 'create partition primary'))
 $sn = New-TIPEStartnet
 $snText = $sn -join "`n"
 Assert-Equal 'startnet: wpeinit primeiro' (@($sn | Where-Object { $_ -and $_ -notmatch '^(@echo|rem )' })[0]) 'wpeinit'

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.2
+
+### Correções
+- **Criar-Pendrive.cmd falhava no particionamento** ("Nenhum volume foi selecionado", código 0x80070057) em pendrives
+  USB mais lentos: o `format` do diskpart vinha antes de o volume aparecer. Agora o diskpart cria as duas partições,
+  dá `rescan` e só então formata cada uma (com seleção explícita); se mesmo assim falhar, o particionamento cai para os
+  comandos de disco do PowerShell (`Format-Volume`). As etapas anteriores (compilar, montar o Windows PE, gerar o ISO)
+  já estavam funcionando.
+
 ## 1.5.1
 
 ### Correções

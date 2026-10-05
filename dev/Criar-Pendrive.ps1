@@ -170,9 +170,11 @@ function Get-TIPEFreeLetters {
     return @($free)
 }
 
-# Script do diskpart: o roteiro da documentação da Microsoft para WinPE com duas partições (depois do
-# "clean" o disco fica sem tabela e o "create partition" cria em MBR; o script confere depois).
-# Sem "noerr": qualquer erro para o diskpart com código diferente de 0.
+# Script do diskpart: duas partições em MBR para WinPE (boot FAT32 + dados).
+# Cria as DUAS partições primeiro, dá "rescan" para os volumes aparecerem e só então
+# formata cada uma com seleção explícita. Pendrives USB 2.0 mais lentos devolviam
+# "Nenhum volume foi selecionado" quando o format vinha logo depois do create (o volume
+# ainda não tinha surgido). Sem "noerr": qualquer erro para o diskpart com código != 0.
 # A letra só é dada depois de formatar: assim o Windows não pergunta "Formatar o disco?".
 function Get-TIPEDiskpartScript {
     param([int]$DiskNumber, [string]$BootLetter, [string]$DataLetter, [string]$FileSystem = 'NTFS', [int]$BootMB = 2048)
@@ -182,14 +184,38 @@ function Get-TIPEDiskpartScript {
         ('select disk {0}' -f $DiskNumber),
         'clean',
         ('create partition primary size={0}' -f $BootMB),
-        'format fs=fat32 quick label="TI-BOOT"',
         'active',
-        ('assign letter={0}' -f $BootLetter),
         'create partition primary',
+        'rescan',
+        ('select disk {0}' -f $DiskNumber),
+        'select partition 1',
+        'format fs=fat32 quick label="TI-BOOT"',
+        ('assign letter={0}' -f $BootLetter),
+        'select partition 2',
         ('format fs={0} quick label="TI-SUITE"' -f $fs),
         ('assign letter={0}' -f $DataLetter),
         'exit'
     )
+}
+
+# Plano B: se o diskpart não formatar, particiona/formata pelos cmdlets de disco do
+# PowerShell (Format-Volume espera o volume de verdade). Pode fazer o Windows mostrar
+# rapidamente "Formatar o disco?" porque a letra vem antes do formato, mas o próprio
+# script formata em seguida.
+function New-TIPEPartitionsFallback {
+    param([int]$DiskNumber, [string]$BootLetter, [string]$DataLetter, [string]$FileSystem = 'NTFS', [int]$BootMB = 2048)
+    $fsData = if ($FileSystem -eq 'exFAT') { 'exFAT' } else { 'NTFS' }
+    Write-TIPEInfo 'Particionando pelos comandos de disco do PowerShell (plano B)...'
+    Get-Disk -Number $DiskNumber -ErrorAction Stop | Clear-Disk -RemoveData -RemoveOEM -Confirm:$false -ErrorAction Stop
+    try { Update-HostStorageCache -ErrorAction SilentlyContinue } catch { }
+    Start-Sleep -Seconds 2
+    try { Initialize-Disk -Number $DiskNumber -PartitionStyle MBR -ErrorAction Stop }
+    catch { try { Set-Disk -Number $DiskNumber -PartitionStyle MBR -ErrorAction SilentlyContinue } catch { } }
+    $p1 = New-Partition -DiskNumber $DiskNumber -Size ($BootMB * 1MB) -DriveLetter $BootLetter -ErrorAction Stop
+    try { Set-Partition -DiskNumber $DiskNumber -PartitionNumber $p1.PartitionNumber -IsActive $true -ErrorAction Stop } catch { }
+    Format-Volume -DriveLetter $BootLetter -FileSystem FAT32 -NewFileSystemLabel 'TI-BOOT' -Force -Confirm:$false -ErrorAction Stop | Out-Null
+    $null = New-Partition -DiskNumber $DiskNumber -UseMaximumSize -DriveLetter $DataLetter -ErrorAction Stop
+    Format-Volume -DriveLetter $DataLetter -FileSystem $fsData -NewFileSystemLabel 'TI-SUITE' -Force -Confirm:$false -ErrorAction Stop | Out-Null
 }
 
 # startnet.cmd do Windows PE (ASCII: o cmd do WinPE lê na página de código OEM).
@@ -1314,7 +1340,13 @@ function Format-TIPEPendrive {
         if ($code -eq 0) { break }
     }
     if ($code -ne 0) {
-        throw ('O diskpart não conseguiu preparar o pendrive (código {0}). Feche janelas e programas que estejam usando o pendrive, desconecte, conecte de novo e rode outra vez.' -f $code)
+        # O diskpart não deu conta (ex.: pendrive lento devolvendo "Nenhum volume foi selecionado"): plano B
+        Write-TIPEWarn ('O diskpart falhou (código {0}). Tentando pelos comandos de disco do PowerShell...' -f $code)
+        try {
+            New-TIPEPartitionsFallback -DiskNumber $Disk.Number -BootLetter $bootL -DataLetter $dataL -FileSystem $FileSystem
+        } catch {
+            throw ('Não consegui preparar o pendrive (diskpart código {0}; plano B: {1}). Feche janelas e programas que estejam usando o pendrive, desconecte, conecte de novo e rode outra vez.' -f $code, $_.Exception.Message)
+        }
     }
     try { Update-HostStorageCache -ErrorAction SilentlyContinue } catch { }
     for ($i = 0; $i -lt 30; $i++) {

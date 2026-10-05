@@ -20,7 +20,7 @@ $global:Theme = @{
 if (-not $global:TI) {
     $global:TI = @{}
 }
-$global:TI.Version    = '1.5.1'
+$global:TI.Version    = '1.5.2'
 $global:TI.Elevated   = $false
 $global:TI.Busy       = $false
 $global:TI.ActiveId   = $null
