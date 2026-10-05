@@ -914,23 +914,59 @@ function Assert-TIPESameDisk {
 }
 
 # --- Controles visuais (DLL) ----------------------------------------------------
-# Igual ao Build-Release, mas num processo separado: o Add-Type deixa a DLL presa no processo que compilou,
-# e a pasta de trabalho precisa ser apagada no fim.
+# A DLL só precisa existir e conferir com o Controls.cs. Então:
+#   1. se já houver uma DLL pronta e certa (no bin do projeto, ou de uma execução anterior), reaproveita;
+#   2. senão, compila com o Add-Type do próprio processo, igual ao dev\Build-Release.ps1.
+# (Antes compilava num segundo powershell.exe com -EncodedCommand; alguns antivírus/EDR seguram esse
+#  tipo de chamada para análise e o criador do pendrive ficava travado minutos ou indefinidamente.)
+function Get-TIPEControlsStampMatches {
+    param([string]$Dll, [string]$Stamp, [string]$WantHash)
+    if (-not (Test-Path -LiteralPath $Dll) -or -not (Test-Path -LiteralPath $Stamp)) { return $false }
+    try {
+        $have = ([string](Get-Content -LiteralPath $Stamp -Raw -Encoding UTF8)).Trim()
+        return ($have -and ($have -ieq $WantHash))
+    } catch { return $false }
+}
+
 function Build-TIPEControlsDll {
     param([string]$OutDir)
     $cs = Join-Path $script:Root 'src\Core\Controls.cs'
+    if (-not (Test-Path -LiteralPath $cs)) { throw ('Não encontrei {0}.' -f $cs) }
     New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
     $dll = Join-Path $OutDir 'TISuite.Controls.dll'
     $stamp = Join-Path $OutDir 'TISuite.Controls.stamp'
-    $code = "`$ErrorActionPreference = 'Stop'`n" +
-            ("`$src = Get-Content -LiteralPath {0} -Raw -Encoding UTF8`n" -f (ConvertTo-TIPEQuoted $cs)) +
-            ("Add-Type -TypeDefinition `$src -ReferencedAssemblies System.dll, System.Drawing.dll, System.Windows.Forms.dll -OutputAssembly {0} -OutputType Library`n" -f (ConvertTo-TIPEQuoted $dll)) +
-            ("(Get-FileHash -LiteralPath {0} -Algorithm SHA256).Hash | Set-Content -LiteralPath {1} -Encoding ASCII`n" -f (ConvertTo-TIPEQuoted $cs), (ConvertTo-TIPEQuoted $stamp))
-    $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($code))
-    $r = Invoke-TIPETool -FilePath $script:PS51 -Arguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc)
-    if ($r.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $dll) -or -not (Test-Path -LiteralPath $stamp)) {
-        throw ('Não consegui compilar bin\TISuite.Controls.dll (código {0}). Rode o dev\Build-Release.ps1 para ver o erro de compilação.' -f $r.ExitCode)
+    $wantHash = (Get-FileHash -LiteralPath $cs -Algorithm SHA256).Hash
+
+    # 1. já pronta no destino? (execução anterior)
+    if (Get-TIPEControlsStampMatches -Dll $dll -Stamp $stamp -WantHash $wantHash) {
+        Write-TIPEOk 'bin\TISuite.Controls.dll já estava pronta e confere com o Controls.cs.'
+        return
     }
+    # 2. DLL pronta no bin do projeto (gerada pelo dev\Build-Release.ps1 ou pelo próprio app)? reaproveita
+    $srcBin = Join-Path $script:Root 'bin'
+    $srcDll = Join-Path $srcBin 'TISuite.Controls.dll'
+    $srcStamp = Join-Path $srcBin 'TISuite.Controls.stamp'
+    if (Get-TIPEControlsStampMatches -Dll $srcDll -Stamp $srcStamp -WantHash $wantHash) {
+        Copy-Item -LiteralPath $srcDll -Destination $dll -Force
+        Copy-Item -LiteralPath $srcStamp -Destination $stamp -Force
+        Write-TIPEOk 'Reaproveitei a bin\TISuite.Controls.dll já compilada do projeto.'
+        return
+    }
+
+    # 3. compilar no próprio processo (igual ao Build-Release; sem abrir outro powershell.exe)
+    Write-TIPEInfo 'Compilando os controles visuais (poucos segundos)...'
+    try {
+        $srcText = Get-Content -LiteralPath $cs -Raw -Encoding UTF8
+        if (Test-Path -LiteralPath $dll) { Remove-Item -LiteralPath $dll -Force -ErrorAction SilentlyContinue }
+        Add-Type -TypeDefinition $srcText -ReferencedAssemblies System.dll, System.Drawing.dll, System.Windows.Forms.dll `
+                 -OutputAssembly $dll -OutputType Library -ErrorAction Stop
+    } catch {
+        throw ('Não consegui compilar bin\TISuite.Controls.dll: {0}. Rode o dev\Build-Release.ps1 para ver o erro completo.' -f $_.Exception.Message)
+    }
+    if (-not (Test-Path -LiteralPath $dll)) {
+        throw 'Não consegui compilar bin\TISuite.Controls.dll. Rode o dev\Build-Release.ps1 para ver o erro de compilação.'
+    }
+    $wantHash | Set-Content -LiteralPath $stamp -Encoding ASCII
     Write-TIPEOk 'bin\TISuite.Controls.dll e o carimbo compilados.'
 }
 

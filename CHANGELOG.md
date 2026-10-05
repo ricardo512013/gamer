@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.1
+
+### Correções
+- **Criar-Pendrive.cmd travava em "Compilando os controles visuais"** em PCs com antivírus/EDR que seguram
+  `powershell.exe -EncodedCommand` (padrão vigiado por segurança). Agora o criador reaproveita a
+  `bin\TISuite.Controls.dll` quando ela já existe e confere com o `Controls.cs` e, quando precisa compilar, faz no
+  próprio processo (igual ao `dev\Build-Release.ps1`), sem abrir outro PowerShell. Dica: rodar antes o
+  `dev\Build-Release.ps1` deixa a DLL pronta e o criador nem compila.
+
 ## 1.5.0
 
 ### Pendrive de recuperação (dá boot)
