@@ -2030,12 +2030,12 @@ function Invoke-RecuperacaoRemoveDriver {
 
 # --- Programas (remoção offline) ---------------------------------------------------
 function Get-RecuperacaoProgMarked {
-    return @($global:Recuperacao.ProgRows | Where-Object { $_ -and -not $_.Protected -and $_.Marked })
+    return @($global:Recuperacao.ProgRows | Where-Object { $_ -and $_.Marked })
 }
 
 function Set-RecuperacaoProgMark {
     param($Row, [bool]$On)
-    if (-not $Row -or -not $Row.Tag -or $Row.Tag.Protected) { return }
+    if (-not $Row -or -not $Row.Tag) { return }
     $Row.Tag.Marked = $On
     $Row.Cells[0].Value = $(if ($On) { $global:RecuperacaoGlyph.On } else { $global:RecuperacaoGlyph.Off })
     $Row.Cells[0].Style.ForeColor = $(if ($On) { $global:Pal.Primary } else { $global:Pal.TextMuted })
@@ -2047,14 +2047,12 @@ function Update-RecuperacaoProgInfo {
     if (-not $r.ProgInfo) { return }
     $rows = @($r.ProgRows | Where-Object { $_ })
     $marked = @(Get-RecuperacaoProgMarked)
-    $prot = @($rows | Where-Object { $_.Protected }).Count
     if ($rows.Count -eq 0) {
         $r.ProgInfo.Text = 'Nenhum programa encontrado neste Windows.'
         $r.ProgInfo.ForeColor = $global:Pal.TextMuted
     } else {
         $sz = [double](($marked | Where-Object { $_.Size -gt 0 } | Measure-Object -Property Size -Sum).Sum)
         $t = '{0} programa(s); {1} marcado(s) para remover ({2}).' -f $rows.Count, $marked.Count, (Format-TIBytes $sz)
-        if ($prot -gt 0) { $t += (' {0} protegido(s) (runtimes e antivírus).' -f $prot) }
         $t += ' Clique na caixa ou use Espaço para marcar.'
         $r.ProgInfo.Text = $t
         $r.ProgInfo.ForeColor = $(if ($marked.Count -gt 0) { $global:Pal.Primary } else { $global:Pal.TextMuted })
@@ -2065,12 +2063,8 @@ function Update-RecuperacaoProgInfo {
 function Switch-RecuperacaoProgRows {
     param($Rows)
     $all = @($Rows | Where-Object { $_ -and $_.Tag })
-    $rows = @($all | Where-Object { -not $_.Tag.Protected })
-    if ($rows.Count -eq 0) {
-        $p = $all | Select-Object -First 1
-        if ($p) { Show-TIToast -Text ('{0} é protegido: {1}.' -f $p.Tag.Name, $p.Tag.Reason) -Type 'Info' }
-        return
-    }
+    $rows = @($all)
+    if ($rows.Count -eq 0) { return }
     $on = (@($rows | Where-Object { -not $_.Tag.Marked }).Count -gt 0)
     foreach ($x in $rows) { Set-RecuperacaoProgMark -Row $x -On $on }
     Update-RecuperacaoProgInfo
@@ -2080,7 +2074,7 @@ function Set-RecuperacaoProgMarkAll {
     param([bool]$On)
     $grid = $global:Recuperacao.ProgGrid
     if (-not $grid) { return }
-    foreach ($x in $grid.Rows) { if ($x.Tag -and -not $x.Tag.Protected) { Set-RecuperacaoProgMark -Row $x -On $On } }
+    foreach ($x in $grid.Rows) { if ($x.Tag) { Set-RecuperacaoProgMark -Row $x -On $On } }
     Update-RecuperacaoProgInfo
 }
 
@@ -2114,7 +2108,7 @@ function Fill-RecuperacaoProgGrid {
         Update-RecuperacaoButtons
         return
     }
-    $list = @($Result.Items | Where-Object { $_ -and $_.PSObject.Properties['KeyName'] } | Sort-Object @{ Expression = { [bool]$_.Protected } }, Name)
+    $list = @($Result.Items | Where-Object { $_ -and $_.PSObject.Properties['KeyName'] } | Sort-Object Name)
     $r.ProgFor = [string]$Result.Drive
     $r.ProgRows = $list
     foreach ($p in $list) {
@@ -2125,13 +2119,11 @@ function Fill-RecuperacaoProgGrid {
         $row = Add-TIRow -Grid $grid -Tag $p -Cells @('', $p.Name, $p.Version, $p.Publisher, $size, $orig) `
                          -SortKeys @($null, $p.Name, $p.Version, $p.Publisher, [double]$p.Size, $orig)
         $row.Cells[1].ToolTipText = $(if ($p.FolderNote) { 'Pasta não será apagada: {0}{1}' -f $p.FolderNote, $(if ($p.Folder) { "`n" + $p.Folder } else { '' }) } else { 'Pasta: ' + $p.Folder })
-        if ($p.Protected) {
-            $row.Cells[0].Value = $global:RecuperacaoGlyph.Lock
-            $row.DefaultCellStyle.ForeColor = $global:Pal.TextDim
-            $row.DefaultCellStyle.SelectionForeColor = $global:Pal.TextMuted
-            $row.Cells[0].ToolTipText = 'Protegido: ' + $p.Reason
+        Set-RecuperacaoProgMark -Row $row -On $false
+        # Nada fica travado: runtime/antivírus só ganha um aviso ao passar o mouse.
+        if ($p.Sensitive) {
+            $row.Cells[0].ToolTipText = 'Atenção: ' + $p.Reason + '. Dá para remover; faça com cuidado.'
         } else {
-            Set-RecuperacaoProgMark -Row $row -On $false
             $row.Cells[0].ToolTipText = 'Marcar ou desmarcar'
         }
     }
@@ -2163,6 +2155,12 @@ function Invoke-RecuperacaoRemovePrograms {
             "O desinstalador do fabricante NÃO roda (o Windows está desligado): podem ficar rastros (serviços, drivers, arquivos em outras pastas). " +
             "Quando o Windows liga, o ideal é desinstalar pelo jeito normal (área Programas); use isto para o programa que não sai com o PC ligado. Não dá para desfazer.") -f `
             $items.Count, $inst.Label, $inst.Drive, (Get-RecuperacaoProgListText $items)
+    $sens = @($items | Where-Object { $_.Sensitive })
+    if ($sens.Count -gt 0) {
+        $sl = (@($sens | Select-Object -First 8 | ForEach-Object { '  ' + $_.Name + ' (' + $_.Reason + ')' }) -join "`n")
+        if ($sens.Count -gt 8) { $sl += ("`n  e mais {0}" -f ($sens.Count - 8)) }
+        $msg += ("`n`nATENÇÃO: a seleção inclui runtime(s)/antivírus. Remover pode afetar o Windows ou outros programas:`n{0}" -f $sl)
+    }
     $msg += (Get-RecuperacaoHiberNote $inst)
     if (-not (Show-TIConfirm -Title 'Remover programas (offline)' -Message $msg -ConfirmText ('Remover {0} programa(s)' -f $items.Count) -Style 'Danger' -Icon 'Warning')) { return }
     $names = @($items | ForEach-Object { $_.Name })
@@ -2431,7 +2429,7 @@ $wsRecuperacao = @{
 
         # --- Programas (remoção offline) -------------------------------------------------
         $b6 = New-TICard -Parent $flow -Title 'Programas (remoção offline)' -Stretch -Icon 'Apps' -Width $w -Height 360 `
-                -Desc 'Remoção forçada do programa que não sai com o PC ligado. Runtimes e antivírus ficam protegidos'
+                -Desc 'Remoção forçada do programa que não sai com o PC ligado. Dá para remover qualquer programa, inclusive runtimes e antivírus (com cuidado)'
         $bar6 = New-TIButtonBar -Parent $b6
         $q1 = New-TIButton -Text 'Listar programas' -Style 'Outline' -Width 156 -Height 36 -Icon 'Search'
         $q1.Enabled = $false

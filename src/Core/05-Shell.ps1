@@ -388,6 +388,38 @@ foreach ($c in @($global:Header, $hTitle, $hSub)) {
     $c.Add_MouseDoubleClick({ if ($_.Button -eq 'Left') { Switch-TIMaximize } })
 }
 
+# O título e o subtítulo não podem passar por baixo dos botões de ação da direita.
+# Em telas estreitas (Windows PE) o "Recuperação" encostava no "Procurar de novo";
+# aqui a largura deles vai só até onde começa a barra de ações, com reticências ("...").
+$global:HeaderLayoutBusy = $false
+function Set-TIHeaderMetrics {
+    if ($global:HeaderLayoutBusy) { return }
+    $t = $global:HeaderTitle
+    $s = $global:HeaderSub
+    $a = $global:HeaderActions
+    if (-not $t -or -not $s -or -not $a) { return }
+    $right = [int]$a.Left
+    if ($right -le 0) { return }   # ainda sem layout; recalcula no próximo evento
+    $global:HeaderLayoutBusy = $true
+    try {
+        $limit = $right - 14
+        foreach ($lbl in @($t, $s)) {
+            if ($lbl.AutoSize) {
+                $h = [int]$lbl.PreferredHeight
+                $lbl.AutoSize = $false
+                $lbl.AutoEllipsis = $true
+                $lbl.Height = $h
+            }
+            $w = $limit - [int]$lbl.Left
+            if ($w -lt 40) { $w = 40 }
+            if ([int]$lbl.Width -ne $w) { $lbl.Width = $w }
+        }
+    } finally {
+        $global:HeaderLayoutBusy = $false
+    }
+}
+$header.Add_Layout({ Set-TIHeaderMetrics })
+
 # ---------------------------------------------------------------------
 # Barra de status
 # ---------------------------------------------------------------------
@@ -609,6 +641,9 @@ function Switch-TIWorkspace {
     $global:HeaderActions.Controls.Clear()
     if ($ws.Actions) { & $ws.Actions $global:HeaderActions }
     foreach ($c in $global:HeaderActions.Controls) { $c.Enabled = -not $global:TI.Busy }
+    # Recalcula a largura do título/subtítulo com a nova barra de ações (sem sobrepor)
+    $global:Header.PerformLayout()
+    Set-TIHeaderMetrics
 
     foreach ($key in @($global:NavItems.Keys)) {
         $global:NavItems[$key].Active = ($key -eq $Id)

@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.5.3
+
+### Programas: nada fica mais travado
+- **A lista de programas não tem mais cadeado.** Antes, runtimes essenciais (Visual C++, .NET, WebView2, Windows App
+  Runtime, Edge) e antivírus/segurança (SentinelOne, Defender, etc.) ficavam bloqueados e fora da desinstalação em
+  lote. Agora **todos os programas podem ser marcados e removidos** — tanto com o Windows aberto (área **Programas**)
+  quanto no boot pelo pendrive (**Recuperação → Programas (remoção offline)**).
+- No lugar da trava, os runtimes/antivírus ganham um **aviso**: ao passar o mouse na linha e, principalmente, na
+  **confirmação** antes de remover, o TI Suite lista quais itens são sensíveis e lembra que removê-los pode afetar o
+  Windows ou outros programas. É só informação — a remoção continua liberada. As pastas do próprio Windows
+  (System32, raízes de Arquivos de Programas) seguem protegidas, porque isso é segurança do sistema, não trava de
+  programa.
+
+### Interface
+- **Cabeçalho não sobrepõe mais os botões.** Em telas estreitas (comum no Windows PE), o título "Recuperação"
+  encavalava no botão "Procurar de novo". Agora a largura do título e do subtítulo é limitada até onde começa a barra
+  de ações, cortando com reticências ("...") quando não cabe, em vez de passar por baixo dos botões.
+
 ## 1.5.2
 
 ### Correções

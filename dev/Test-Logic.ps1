@@ -624,6 +624,10 @@ Assert-True  'prog: antivírus pelo editor' ([bool](Get-TIProgramProtection 'Fre
 Assert-Equal 'prog: "reset" não é ESET' (Get-TIProgramProtection 'Reset Tool' 'Acme') ''
 $e = ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'VLC media player'; DisplayVersion = '3.0.20'; Publisher = 'VideoLAN'; InstallLocation = 'C:\Program Files\VideoLAN\VLC' } -KeyName 'VLC media player' -Drive 'D:'
 Assert-Equal 'prog: entrada lida' ('{0}|{1}|{2}' -f $e.Name, $e.Version, $e.Folder) 'VLC media player|3.0.20|D:\Program Files\VideoLAN\VLC'
+$eRt = ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'Microsoft .NET Runtime - 8.0.4 (x64)'; Publisher = 'Microsoft Corporation' } -KeyName 'rt'
+Assert-Equal 'prog: runtime não trava mais' ([bool]$eRt.Protected) $false
+Assert-Equal 'prog: runtime é sensível (só aviso)' ([bool]$eRt.Sensitive) $true
+Assert-Equal 'prog: comum não é sensível' ([bool]$e.Sensitive) $false
 Assert-True  'prog: componente do sistema some' ($null -eq (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'X'; SystemComponent = 1 }))
 Assert-True  'prog: atualização some' ($null -eq (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'Security Update for Microsoft Office (KB123456)' }))
 Assert-Equal 'prog: código MSI' (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'App'; WindowsInstaller = 1 } -KeyName '{12345678-90ab-CDEF-1234-567890ABCDEF}').ProductCode '{12345678-90AB-CDEF-1234-567890ABCDEF}'

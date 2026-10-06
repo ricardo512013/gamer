@@ -804,7 +804,8 @@ function ConvertFrom-TIUninstallEntry {
         KeyName      = $KeyName
         Msi          = ((& $get 'WindowsInstaller') -eq '1')
         ProductCode  = $code
-        Protected    = [bool]$prot
+        Protected    = $false
+        Sensitive    = [bool]$prot
         Reason       = $prot
     }
 }
@@ -1055,12 +1056,9 @@ function Remove-TIOfflinePrograms {
         $i++
         $r = [pscustomobject]@{ Name = [string]$it.Name; Folder = ''; Shortcuts = 0; Registry = ''; Level = 'Success'; Item = $it }
         [void]$results.Add($r)
+        # Runtime/antivírus não trava mais: só avisa e remove assim mesmo (pedido do técnico).
         $prot = Get-TIProgramProtection -Name ([string]$it.Name) -Publisher ([string]$it.Publisher)
-        if ($prot) {
-            $r.Level = 'Warn'; $r.Folder = 'mantida'; $r.Registry = 'mantido'
-            Emit ('{0} é protegido ({1}): mantido.' -f $it.Name, $prot) 'Warn'
-            continue
-        }
+        if ($prot) { Emit ('{0}: atenção, {1}. Removendo mesmo assim.' -f $it.Name, $prot) 'Warn' }
         Emit ('Removendo {0} ({1}/{2})...' -f $it.Name, $i, $Items.Count) 'Info' ([int](5 + 70 * $i / $Items.Count))
         $folder = ([string]$it.Folder).TrimEnd('\')
         $why = Test-TIRemovableProgramFolder -Folder $folder -Root $root

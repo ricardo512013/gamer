@@ -43,14 +43,14 @@ function Format-ProgramasCount {
     return ('{0} programas' -f $N)
 }
 
-# Programas marcados (nunca os travados), em toda a lista — não só os visíveis
+# Programas marcados em toda a lista — não só os visíveis
 function Get-ProgramasMarked {
-    return @($global:Programas.Rows | Where-Object { $_ -and -not $_.Locked -and $_.Marked })
+    return @($global:Programas.Rows | Where-Object { $_ -and $_.Marked })
 }
 
 function Set-ProgramasRowMark {
     param($Row, [bool]$On)
-    if (-not $Row -or -not $Row.Tag -or $Row.Tag.Locked) { return }
+    if (-not $Row -or -not $Row.Tag) { return }
     $Row.Tag.Marked = $On
     $Row.Cells[0].Value = $(if ($On) { $global:ProgramasGlyph.On } else { $global:ProgramasGlyph.Off })
     $Row.Cells[0].Style.ForeColor = $(if ($On) { $global:Pal.Primary } else { $global:Pal.TextMuted })
@@ -61,24 +61,20 @@ function Set-ProgramasRowMark {
 function Switch-ProgramasRows {
     param($Rows)
     $all = @($Rows | Where-Object { $_ -and $_.Tag })
-    $rows = @($all | Where-Object { -not $_.Tag.Locked })
-    if ($rows.Count -eq 0) {
-        $p = $all | Select-Object -First 1
-        if ($p) { Show-TIToast -Text ('{0}: fora do lote ({1}). Use o duplo clique para desinstalar pelo fabricante.' -f $p.Tag.Name, $p.Tag.LockReason) -Type 'Info' }
-        return
-    }
+    $rows = @($all)
+    if ($rows.Count -eq 0) { return }
     $on = (@($rows | Where-Object { -not $_.Tag.Marked }).Count -gt 0)
     foreach ($r in $rows) { Set-ProgramasRowMark -Row $r -On $on }
     Update-ProgramasMarkInfo
 }
 
-# Marca/desmarca todos os programas visíveis (os travados ficam de fora)
+# Marca/desmarca todos os programas visíveis
 function Set-ProgramasMarkAll {
     param([bool]$On)
     $grid = $global:Programas.Grid
     if (-not $grid) { return }
     foreach ($r in $grid.Rows) {
-        if (-not $r.Tag -or $r.Tag.Locked) { continue }
+        if (-not $r.Tag) { continue }
         Set-ProgramasRowMark -Row $r -On $On
     }
     Update-ProgramasMarkInfo
@@ -87,7 +83,7 @@ function Set-ProgramasMarkAll {
 function Update-ProgramasMarkInfo {
     $rows = @($global:Programas.Rows | Where-Object { $_ })
     $total = $rows.Count
-    $markable = @($rows | Where-Object { -not $_.Locked }).Count
+    $markable = $total
     $marked = @(Get-ProgramasMarked).Count
     $shown = @(Get-ProgramasFiltered).Count
     if ($global:Programas.CountLabel) {
@@ -97,7 +93,7 @@ function Update-ProgramasMarkInfo {
     $info = $global:Programas.Info
     if ($info) {
         if ($markable -eq 0) {
-            $info.Text = 'Nenhum programa pode entrar no lote. Use o duplo clique para desinstalar um programa pelo desinstalador do fabricante.'
+            $info.Text = 'Nenhum programa carregado. Clique em Atualizar.'
             $info.ForeColor = $global:Pal.TextMuted
         } elseif ($marked -eq 0) {
             $info.Text = 'Marque os programas e clique em Desinstalar marcados. Clique na caixa ou use Espaço; duplo clique desinstala um só.'
@@ -132,14 +128,12 @@ function Fill-ProgramasGrid {
             $(if ($date) { ([datetime]$date).ToString('dd/MM/yyyy') } else { '-' }),
             $(if ($r.Scope) { $r.Scope } else { '-' })
         ) -Tag $r -SortKeys @($null, $null, $null, $null, [double]$r.Size, $(if ($date) { [datetime]$date } else { [datetime]::MinValue }), $null)
-        if ($r.Locked) {
-            $row.Cells[0].Value = $global:ProgramasGlyph.Lock
-            $row.DefaultCellStyle.ForeColor = $global:Pal.TextDim
-            $row.DefaultCellStyle.SelectionForeColor = $global:Pal.TextMuted
-            $row.Cells[0].ToolTipText = ('Fora do lote: ' + $r.LockReason)
-            $row.Cells[1].ToolTipText = ('Fora da desinstalação em lote: {0}. Use o duplo clique para desinstalar pelo fabricante.' -f $r.LockReason)
+        Set-ProgramasRowMark -Row $row -On ([bool]$r.Marked)
+        # Nada fica travado: runtime/antivírus só ganha um aviso ao passar o mouse.
+        if ($r.Sensitive) {
+            $row.Cells[0].ToolTipText = 'Atenção: ' + $r.LockReason + '. Dá para desinstalar; faça com cuidado.'
+            $row.Cells[1].ToolTipText = ('Runtime/antivírus: {0}. Dá para desinstalar no lote; pode afetar outros programas.' -f $r.LockReason)
         } else {
-            Set-ProgramasRowMark -Row $row -On ([bool]$r.Marked)
             $row.Cells[0].ToolTipText = 'Marcar ou desmarcar'
         }
     }
@@ -218,6 +212,12 @@ function Invoke-ProgramasUninstall {
     if ($items.Count -gt 20) { $list += ("`n  e mais {0}" -f ($items.Count - 20)) }
     $msg = ("Estes {0} programa(s) serão desinstalados, um a um:`n`n{1}`n`nAntes de cada um, o TI Suite fecha as janelas e os processos dele e para os serviços dele (só dentro da pasta de instalação do programa), para os arquivos não ficarem presos. Usa o modo silencioso quando o fabricante permite; se não, abre a janela do desinstalador para você concluir. Não dá para desfazer." -f `
             $items.Count, $list)
+    $sens = @($items | Where-Object { $_.Sensitive })
+    if ($sens.Count -gt 0) {
+        $sl = (@($sens | Select-Object -First 8 | ForEach-Object { '  ' + $_.Name }) -join "`n")
+        if ($sens.Count -gt 8) { $sl += ("`n  e mais {0}" -f ($sens.Count - 8)) }
+        $msg += ("`n`nATENÇÃO: a seleção inclui runtime(s)/antivírus. Desinstalar pode afetar outros programas ou a proteção do PC:`n{0}" -f $sl)
+    }
     $res = Show-TIConfirm -Title 'Desinstalar marcados' -Message $msg `
             -ConfirmText ('Desinstalar {0}' -f $items.Count) -Style 'Danger' -Icon 'Warning'
     if (-not $res) { return }
@@ -243,14 +243,14 @@ function Invoke-ProgramasUninstall {
 }
 
 # Desinstalação individual (como hoje): pelo duplo clique, vale para qualquer
-# programa, inclusive os travados no lote. Não encerra processos nem serviços.
+# programa. Não encerra processos nem serviços (usa o desinstalador do fabricante).
 function Invoke-ProgramasUninstallOne {
     param($App)
     if ($global:TI.Busy -or -not $App) { return }
     if (-not $global:TI.Elevated) { Show-TIToast -Text $global:ProgramasAdminMsg -Type 'Error'; return }
     $sel = $App
     $when = $(if ($sel.InstallDate) { ([datetime]$sel.InstallDate).ToString('dd/MM/yyyy') } else { '-' })
-    $lockNote = $(if ($sel.Locked) { ("`n`nEste programa fica fora da desinstalação em lote ({0}), mas pode ser desinstalado aqui pelo desinstalador do fabricante." -f $sel.LockReason) } else { '' })
+    $lockNote = $(if ($sel.Sensitive) { ("`n`nAtenção: {0}. Dá para desinstalar, mas pode afetar outros programas ou a proteção do PC." -f $sel.LockReason) } else { '' })
     $msg = ("Desinstalar '{0}'?`n`nVersão: {1}`nFabricante: {2}`nInstalado em: {3}`nPara: {4}{5}`n`nO TI Suite usa o modo silencioso quando o fabricante permite; se não, abre a janela do desinstalador para você concluir. Não dá para desfazer." -f `
         $sel.Name, $(if ($sel.Version) { $sel.Version } else { '-' }), $(if ($sel.Publisher) { $sel.Publisher } else { '-' }),
         $when, $(if ($sel.Scope) { $sel.Scope } else { '-' }), $lockNote)
@@ -409,7 +409,7 @@ $wsProgramas = @{
         $grid.Add_ColumnHeaderMouseClick({
             param($s, $e)
             if ($e.ColumnIndex -ne 0 -or $global:TI.Busy) { return }
-            $gridRows = @($s.Rows | Where-Object { $_.Tag -and -not $_.Tag.Locked })
+            $gridRows = @($s.Rows | Where-Object { $_.Tag })
             $allOn = ($gridRows.Count -gt 0 -and @($gridRows | Where-Object { -not $_.Tag.Marked }).Count -eq 0)
             Set-ProgramasMarkAll -On (-not $allOn)
         })

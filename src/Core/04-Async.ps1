@@ -537,15 +537,15 @@ function Get-TIInstalledApps {
                 $size = 0.0
                 if ($p.EstimatedSize) { $size = [double]$p.EstimatedSize * 1KB }
                 $cleanName = $name.Trim()
-                # Trava de lote: runtime essencial ou antivírus/segurança (motivo no cadeado).
-                # A desinstalação individual continua disponível pelo duplo clique.
+                # Nada fica travado: runtime essencial ou antivírus/segurança só recebe a marca
+                # "Sensitive", para avisar na confirmação. Tudo pode entrar no lote (pedido do técnico).
                 $lock = Get-TIAppBatchLock -Name $cleanName -Publisher ([string]$p.Publisher)
                 [void]$rows.Add([pscustomobject]@{
                     Name = $cleanName; Version = [string]$p.DisplayVersion; Publisher = [string]$p.Publisher
                     Size = $size; InstallDate = (ConvertFrom-TIInstallDate ([string]$p.InstallDate)); Scope = $scope
                     Uninstall = $uninst; Quiet = [string]$p.QuietUninstallString; Key = $_.PSPath
                     InstallLocation = [string]$p.InstallLocation; Icon = [string]$p.DisplayIcon
-                    Locked = [bool]$lock.Locked; LockReason = [string]$lock.Reason
+                    Locked = $false; Sensitive = [bool]$lock.Locked; LockReason = [string]$lock.Reason
                 })
             } catch { }
         }
@@ -939,13 +939,9 @@ function Uninstall-TIAppBatch {
         foreach ($app in $apps) {
             $i++
             $name = [string]$app.Name
-            # Dupla checagem: item travado nunca entra no lote
+            # Runtime/antivírus não trava mais: avisa, mas desinstala assim mesmo (pedido do técnico).
             $lock = Get-TIAppBatchLock -Name $name -Publisher ([string]$app.Publisher)
-            if ($lock.Locked) {
-                Emit ('{0}: fora do lote ({1}).' -f $name, $lock.Reason) 'Warn'
-                [void]$results.Add([pscustomobject]@{ Name = $name; Status = 'failed'; Reboot = $false; Code = $null; Message = ('fora do lote: ' + $lock.Reason) })
-                continue
-            }
+            if ($lock.Locked) { Emit ('{0}: atenção, {1}. Desinstalando mesmo assim.' -f $name, $lock.Reason) 'Warn' }
             Emit ('Programa {0} de {1}: {2}' -f $i, $total, $name) 'Info' ([int](100 * $i / $total))
 
             # Parte B: encerra os componentes do programa (dentro da pasta dele)
