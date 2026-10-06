@@ -2114,11 +2114,20 @@ function Fill-RecuperacaoProgGrid {
     foreach ($p in $list) {
         # nada vem marcado: o técnico escolhe
         Add-Member -InputObject $p -NotePropertyName 'Marked' -NotePropertyValue $false -Force
-        $orig = $(if ($p.Scope -eq 'Usuário') { 'Usuário: ' + $p.User } else { 'Máquina' })
+        $leftover = ($p.PSObject.Properties['Leftover'] -and $p.Leftover)
+        $orig = $(if ($p.Scope -eq 'Usuário') { 'Usuário: ' + $p.User } elseif ($p.Scope) { [string]$p.Scope } else { 'Máquina' })
+        $ver = $(if ($leftover) { 'restos' } else { $p.Version })
         $size = $(if ($p.Size -ge 0) { Format-TIBytes $p.Size } else { '-' })
-        $row = Add-TIRow -Grid $grid -Tag $p -Cells @('', $p.Name, $p.Version, $p.Publisher, $size, $orig) `
-                         -SortKeys @($null, $p.Name, $p.Version, $p.Publisher, [double]$p.Size, $orig)
-        $row.Cells[1].ToolTipText = $(if ($p.FolderNote) { 'Pasta não será apagada: {0}{1}' -f $p.FolderNote, $(if ($p.Folder) { "`n" + $p.Folder } else { '' }) } else { 'Pasta: ' + $p.Folder })
+        $row = Add-TIRow -Grid $grid -Tag $p -Cells @('', $p.Name, $ver, $p.Publisher, $size, $orig) `
+                         -SortKeys @($null, $p.Name, $ver, $p.Publisher, [double]$p.Size, $orig)
+        if ($leftover) {
+            $ns = @($p.Services).Count; $nf = @($p.Folders).Count
+            $row.Cells[1].ToolTipText = ('Resto de antivírus ({0}): {1} serviço(s)/driver(s) e {2} pasta(s) que sobraram no PC.{3}' -f $p.Vendor, $ns, $nf, $(if ($nf) { "`n" + (@($p.Folders) -join "`n") } else { '' }))
+            $row.Cells[1].Style.ForeColor = $global:Pal.Warning
+            $row.Cells[1].Style.SelectionForeColor = $global:Pal.Warning
+        } else {
+            $row.Cells[1].ToolTipText = $(if ($p.FolderNote) { 'Pasta não será apagada: {0}{1}' -f $p.FolderNote, $(if ($p.Folder) { "`n" + $p.Folder } else { '' }) } else { 'Pasta: ' + $p.Folder })
+        }
         Set-RecuperacaoProgMark -Row $row -On $false
         # Nada fica travado: runtime/antivírus só ganha um aviso ao passar o mouse.
         if ($p.Sensitive) {
@@ -2135,7 +2144,11 @@ function Fill-RecuperacaoProgGrid {
 function Get-RecuperacaoProgListText {
     param($Items, [int]$Max = 12)
     $txt = (@($Items | Select-Object -First $Max | ForEach-Object {
-        $f = $(if ($_.FolderNote) { 'pasta mantida: ' + $_.FolderNote } else { 'apaga ' + $_.Folder })
+        if ($_.PSObject.Properties['Leftover'] -and $_.Leftover) {
+            $ns = $(if ($_.PSObject.Properties['Services']) { @($_.Services).Count } else { 0 })
+            $nf = $(if ($_.PSObject.Properties['Folders']) { @($_.Folders).Count } else { 0 })
+            $f = ('restos: {0} serviço(s)/driver(s), {1} pasta(s)' -f $ns, $nf)
+        } elseif ($_.FolderNote) { $f = 'pasta mantida: ' + $_.FolderNote } else { $f = 'apaga ' + $_.Folder }
         '  {0}  ({1})' -f $_.Name, $f
     }) -join "`n")
     if (@($Items).Count -gt $Max) { $txt += ("`n  e mais {0}" -f (@($Items).Count - $Max)) }
@@ -2148,12 +2161,18 @@ function Invoke-RecuperacaoRemovePrograms {
     if ($global:Recuperacao.ProgFor -ne (Get-RecuperacaoKey $inst)) { Show-TIToast -Text 'Liste os programas deste Windows antes.' -Type 'Warn'; return }
     $items = @(Get-RecuperacaoProgMarked)
     if ($items.Count -eq 0) { Show-TIToast -Text 'Marque ao menos um programa na lista.' -Type 'Warn'; return }
-    $keep = @($global:Recuperacao.ProgRows | Where-Object { $_ -and -not $_.Marked -and $_.Folder } | ForEach-Object { [string]$_.Folder })
-    $msg = ("Remoção FORÇADA (offline) de {0} programa(s) do {1} ({2}):`n`n{3}`n`n" +
+    $keep = New-Object System.Collections.ArrayList
+    foreach ($row in @($global:Recuperacao.ProgRows | Where-Object { $_ -and -not $_.Marked })) {
+        if ($row.PSObject.Properties['Folders'] -and @($row.Folders).Count) { foreach ($f in @($row.Folders)) { if ($f) { [void]$keep.Add([string]$f) } } }
+        elseif ($row.Folder) { [void]$keep.Add([string]$row.Folder) }
+    }
+    $keep = @($keep)
+    $msg = ("Remoção FORÇADA (offline) de {0} item(ns) do {1} ({2}):`n`n{3}`n`n" +
             "O que é feito: apaga a pasta do programa (só dentro de Arquivos de Programas, ProgramData ou AppData\Local\Programs, nunca seguindo junções), " +
-            "os atalhos do Menu Iniciar e da área de trabalho e a entrada na lista de programas do Windows.`n`n" +
-            "O desinstalador do fabricante NÃO roda (o Windows está desligado): podem ficar rastros (serviços, drivers, arquivos em outras pastas). " +
-            "Quando o Windows liga, o ideal é desinstalar pelo jeito normal (área Programas); use isto para o programa que não sai com o PC ligado. Não dá para desfazer.") -f `
+            "os atalhos, a entrada na lista de programas e — quando é antivírus/segurança — também os SERVIÇOS e DRIVERS dele e as pastas de dados (ProgramData). " +
+            "Em pasta travada pelo antivírus, o TI Suite toma posse e devolve a permissão para conseguir apagar.`n`n" +
+            "O desinstalador do fabricante NÃO roda (o Windows está desligado). Nunca toca nos serviços essenciais do Windows nem nas pastas do sistema. " +
+            "Use isto para o antivírus/programa que não sai com o PC ligado. Não dá para desfazer.") -f `
             $items.Count, $inst.Label, $inst.Drive, (Get-RecuperacaoProgListText $items)
     $sens = @($items | Where-Object { $_.Sensitive })
     if ($sens.Count -gt 0) {
@@ -2176,7 +2195,8 @@ function Invoke-RecuperacaoRemovePrograms {
             if ($Context.Install.Hibernated) { Remove-TIHibernation -Install $Context.Install -Result $res }
             foreach ($o in @(Remove-TIOfflinePrograms -Install $Context.Install -Items $Context.Items -KeepFolders $Context.Keep)) {
                 if (-not $o) { continue }
-                Add-TIRecoveryStep $res $o.Name $o.Level ('pasta {0}; {1} atalho(s); registro {2}' -f $o.Folder, $o.Shortcuts, $o.Registry) -NoEmit
+                $svc = $(if ($o.PSObject.Properties['Services'] -and $o.Services -gt 0) { '; {0} serviço(s)/driver(s)' -f $o.Services } else { '' })
+                Add-TIRecoveryStep $res $o.Name $o.Level ('pasta {0}; {1} atalho(s); registro {2}{3}' -f $o.Folder, $o.Shortcuts, $o.Registry, $svc) -NoEmit
             }
         } catch {
             Add-TIRecoveryStep $res 'Remoção offline de programas' 'Error' $_.Exception.Message
@@ -2429,7 +2449,7 @@ $wsRecuperacao = @{
 
         # --- Programas (remoção offline) -------------------------------------------------
         $b6 = New-TICard -Parent $flow -Title 'Programas (remoção offline)' -Stretch -Icon 'Apps' -Width $w -Height 360 `
-                -Desc 'Remoção forçada do programa que não sai com o PC ligado. Dá para remover qualquer programa, inclusive runtimes e antivírus (com cuidado)'
+                -Desc 'Remoção forçada do antivírus/programa que não sai com o PC ligado: tira a pasta, os serviços, os drivers e os dados, de raiz. Também acha os restos de antivírus que sobraram no PC'
         $bar6 = New-TIButtonBar -Parent $b6
         $q1 = New-TIButton -Text 'Listar programas' -Style 'Outline' -Width 156 -Height 36 -Icon 'Search'
         $q1.Enabled = $false

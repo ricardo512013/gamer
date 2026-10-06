@@ -628,6 +628,53 @@ $eRt = ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'Microsoft .NET Run
 Assert-Equal 'prog: runtime não trava mais' ([bool]$eRt.Protected) $false
 Assert-Equal 'prog: runtime é sensível (só aviso)' ([bool]$eRt.Sensitive) $true
 Assert-Equal 'prog: comum não é sensível' ([bool]$e.Sensitive) $false
+
+# --- Remoção de raiz (offline): fabricantes de antivírus, serviços, caminhos ---
+Assert-Equal 'av: SentinelOne pelo nome'    (Get-TISecurityVendor 'Sentinel Agent') 'SentinelOne'
+Assert-Equal 'av: SentinelOne pelo editor'  (Get-TISecurityVendor 'LogProcessorService | SentinelOne') 'SentinelOne'
+Assert-Equal 'av: Trend Micro pelo caminho' (Get-TISecurityVendor 'C:\Program Files\Trend Micro\Apex One\x.exe') 'Trend Micro'
+Assert-Equal 'av: Trend pelo serviço'       (Get-TISecurityVendor 'ntrtscan') 'Trend Micro'
+Assert-Equal 'av: McAfee'                   (Get-TISecurityVendor 'McAfee Agent') 'McAfee'
+Assert-Equal 'av: comum não casa'           (Get-TISecurityVendor 'Google Chrome | Google LLC') ''
+Assert-Equal 'av: Defender não casa'        (Get-TISecurityVendor 'Windows Defender') ''
+Assert-True  'av: rx do rótulo'             ([bool](Get-TISecurityVendorRx 'SentinelOne'))
+Assert-Equal 'av: rx de rótulo inexistente' (Get-TISecurityVendorRx 'Nada') ''
+Assert-Equal 'svc: binário com aspas e arg' (Resolve-TIServiceImagePath '"C:\Program Files\SentinelOne\Sentinel Agent\SentinelAgent.exe" --svc' 'D:') 'D:\Program Files\SentinelOne\Sentinel Agent\SentinelAgent.exe'
+Assert-Equal 'svc: driver \SystemRoot'      (Resolve-TIServiceImagePath '\SystemRoot\System32\drivers\SentinelMonitor.sys' 'D:') 'D:\Windows\System32\drivers\SentinelMonitor.sys'
+Assert-Equal 'svc: %SystemRoot% com arg'    (Resolve-TIServiceImagePath '%SystemRoot%\system32\svchost.exe -k x' 'D:') 'D:\Windows\system32\svchost.exe'
+Assert-Equal 'svc: system32 relativo'       (Resolve-TIServiceImagePath 'system32\DRIVERS\x.sys' 'D:') 'D:\Windows\System32\DRIVERS\x.sys'
+Assert-Equal 'svc: \??\ troca a letra'      (Resolve-TIServiceImagePath '\??\C:\Program Files\Trend Micro\x.exe' 'E:') 'E:\Program Files\Trend Micro\x.exe'
+Assert-Equal 'svc: vazio'                   (Resolve-TIServiceImagePath '' 'D:') ''
+Assert-Equal 'under: dentro'  (Test-TIPathUnder 'D:\Program Files\X\a.exe' 'D:\Program Files\X') $true
+Assert-Equal 'under: igual'   (Test-TIPathUnder 'D:\Program Files\X' 'D:\Program Files\X\') $true
+Assert-Equal 'under: irmão não conta' (Test-TIPathUnder 'D:\Program Files\XY' 'D:\Program Files\X') $false
+Assert-Equal 'under: vazio'   (Test-TIPathUnder '' 'D:\X') $false
+Assert-Equal 'crit: disco protegido'        (Test-TICriticalService 'disk') $true
+Assert-Equal 'crit: Defender protegido'     (Test-TICriticalService 'WinDefend') $true
+Assert-Equal 'crit: sentinel não é crítico' (Test-TICriticalService 'SentinelAgent') $false
+Assert-Equal 'crit: vazio protege'          (Test-TICriticalService '') $true
+$svcs = @(
+  [pscustomobject]@{ Name='SentinelAgent';   Display='Sentinel Agent';  ImagePath='x'; Binary='D:\Program Files\SentinelOne\Sentinel Agent\SentinelAgent.exe' },
+  [pscustomobject]@{ Name='SentinelMonitor'; Display='Sentinel Monitor';ImagePath='\SystemRoot\System32\drivers\SentinelMonitor.sys'; Binary='D:\Windows\System32\drivers\SentinelMonitor.sys' },
+  [pscustomobject]@{ Name='disk';            Display='Disk';            ImagePath='system32\drivers\disk.sys'; Binary='D:\Windows\System32\drivers\disk.sys' },
+  [pscustomobject]@{ Name='Spooler';         Display='Print Spooler';   ImagePath='x'; Binary='D:\Windows\System32\spoolsv.exe' }
+)
+$sel = @(Select-TIItemServices -Services $svcs -Folders @('D:\Program Files\SentinelOne') -VendorRx (Get-TISecurityVendorRx 'SentinelOne'))
+Assert-Equal 'svcsel: pega agent (pasta) e monitor (fabricante)' ((@($sel | ForEach-Object { $_.Name })) -join ',') 'SentinelAgent,SentinelMonitor'
+Assert-Equal 'svcsel: nunca pega serviço crítico' ([bool](@($sel | Where-Object { $_.Name -eq 'disk' }).Count)) $false
+$sel2 = @(Select-TIItemServices -Services $svcs -Folders @('D:\Program Files\VLC') -VendorRx '')
+Assert-Equal 'svcsel: sem pasta nem fabricante não pega nada' $sel2.Count 0
+# fragmentos curtos/ambíguos NÃO casam mais (erra para menos num tool destrutivo)
+Assert-Equal 'av: avp sozinho não casa'  (Get-TISecurityVendor 'some avp here') ''
+Assert-Equal 'av: avg sozinho não casa'  (Get-TISecurityVendor 'avg') ''
+Assert-Equal 'av: egui não casa'         (Get-TISecurityVendor 'egui') ''
+Assert-Equal 'av: klim não casa'         (Get-TISecurityVendor 'C:\Program Files\KLIM\keyboard.exe') ''
+Assert-Equal 'av: avgsvc ainda casa'     (Get-TISecurityVendor 'avgsvc') 'Avast/AVG'
+# serviço só com o fabricante no CAMINHO (não no nome/arquivo) não casa por fabricante;
+# só casa quando a pasta VALIDADA do programa é passada (prova a correção do blocker)
+$svcP = @([pscustomobject]@{ Name='Updater'; Display='Generic Updater'; ImagePath='D:\Program Files\SentinelOne\bin\upd.exe'; Binary='D:\Program Files\SentinelOne\bin\upd.exe' })
+Assert-Equal 'svcsel: fabricante só no caminho não casa' (@(Select-TIItemServices -Services $svcP -Folders @() -VendorRx (Get-TISecurityVendorRx 'SentinelOne')).Count) 0
+Assert-Equal 'svcsel: casa quando a pasta validada é passada' (@(Select-TIItemServices -Services $svcP -Folders @('D:\Program Files\SentinelOne') -VendorRx (Get-TISecurityVendorRx 'SentinelOne')).Count) 1
 Assert-True  'prog: componente do sistema some' ($null -eq (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'X'; SystemComponent = 1 }))
 Assert-True  'prog: atualização some' ($null -eq (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'Security Update for Microsoft Office (KB123456)' }))
 Assert-Equal 'prog: código MSI' (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'App'; WindowsInstaller = 1 } -KeyName '{12345678-90ab-CDEF-1234-567890ABCDEF}').ProductCode '{12345678-90AB-CDEF-1234-567890ABCDEF}'

@@ -994,8 +994,130 @@ function Get-TIOfflinePrograms {
             $e.Size = Get-TISafeSize -Path $e.Folder
         }
     }
-    Emit ('{0} programa(s) encontrado(s) em {1}.' -f $items.Count, $drive) 'Success' 100
-    return @($items | Sort-Object Name)
+    # Restos de antivírus/segurança (serviços, drivers e pastas que sobraram de uma
+    # remoção pela metade): entram na lista como "<Fabricante> (restos)".
+    Emit 'Procurando restos de antivírus/segurança...' 'Debug' 97
+    $leftovers = @()
+    $skey = $null
+    try {
+        $skey = Mount-TIOfflineHive -Path ($root + 'Windows\System32\config\SYSTEM')
+        $shk = $skey -replace '^HKLM\\', ''
+        $scan = Read-TIOfflineServices -Hk $shk -Root $root
+        $known = @($items | Where-Object { $_.Folder } | ForEach-Object { [string]$_.Folder })
+        $knownV = @($items | ForEach-Object { Get-TISecurityVendor -Text ([string]$_.Name + ' ' + [string]$_.Publisher) } | Where-Object { $_ } | Select-Object -Unique)
+        $leftovers = @(Get-TIOfflineAvLeftovers -Root $root -Services $scan.Services -KnownFolders $known -KnownVendors $knownV)
+    } catch {
+        Emit ('Não foi possível procurar restos de antivírus: {0}' -f $_.Exception.Message) 'Warn'
+    } finally {
+        if ($skey) { [void](Dismount-TIOfflineHive -Key $skey) }
+    }
+    $msg = '{0} programa(s) encontrado(s) em {1}.' -f $items.Count, $drive
+    if (@($leftovers).Count -gt 0) { $msg += (' {0} resto(s) de antivírus.' -f @($leftovers).Count) }
+    Emit $msg 'Success' 100
+    return @(@($items | Sort-Object Name) + @($leftovers))
+}
+
+# =====================================================================
+# Remoção "de raiz" (offline): pasta travada pelo antivírus, serviços,
+# drivers e restos. Só no modo recuperação; nunca toca no Windows em uso.
+# =====================================================================
+
+# Fabricantes de antivírus/segurança reconhecidos pelo nome do produto/empresa
+# (no caminho do binário, no nome do serviço ou no nome da pasta). NÃO inclui o
+# Windows Defender de propósito (é componente do Windows). Regra pura.
+function Get-TISecurityVendors {
+    # Só tokens distintivos (nome do produto/empresa ou nome de serviço específico do
+    # fabricante). Fragmentos curtos e ambíguos (avp, avg, klim, egui) ficam de fora
+    # de propósito: esta lista decide o que é removido de raiz, então erra para menos.
+    return @(
+        @{ Label = 'SentinelOne';     Rx = 'sentinel ?one|sentinel ?agent|\bsentinelmonitor\b|\bsentinelctl\b|\bsentinelhelper\b' },
+        @{ Label = 'Trend Micro';     Rx = 'trend ?micro|officescan|apex ?one|\bntrtscan\b|\btmlisten\b|\btmbmsrv\b|\btmccsf\b|\btmactmon\b|\btmevtmgr\b|\btmcomm\b|\bds_agent\b|\btmpfw\b' },
+        @{ Label = 'McAfee';          Rx = 'mcafee|\bmfemms\b|\bmfevtps\b|\bmcshield\b|\bmfewc\b|\bmfehidk\b' },
+        @{ Label = 'Sophos';          Rx = 'sophos|\bsavservice\b|\bswi_service\b|\bsophosfs\b|\bhitmanpro\b' },
+        @{ Label = 'ESET';            Rx = '\beset\b|nod32|\bekrn\b|\befsw\b' },
+        @{ Label = 'Kaspersky';       Rx = 'kaspersky|\bklif\b|\bklnagent\b|\bkavfs\b' },
+        @{ Label = 'Avast/AVG';       Rx = '\bavast\b|\bavastsvc\b|\baswbidsagent\b|\baswidsagent\b|\bavgsvc\b|\bavgui\b|avg antivirus|avg internet' },
+        @{ Label = 'Avira';           Rx = 'avira|\bavguard\b|\bavgnt\b|\bavmailc\b' },
+        @{ Label = 'Norton/Symantec'; Rx = 'norton|nortonlifelock|symantec|\bccsvchst\b|\bsmcservice\b|\bsepmasterservice\b|\bsrtsp\b' },
+        @{ Label = 'Bitdefender';     Rx = 'bitdefender|\bbdservicehost\b|\bvsserv\b|\bbdagent\b' },
+        @{ Label = 'Malwarebytes';    Rx = 'malwarebytes|\bmbamservice\b|\bmbamchameleon\b' },
+        @{ Label = 'CrowdStrike';     Rx = 'crowdstrike|\bcsagent\b|\bcsfalcon\b|falcon ?sensor' },
+        @{ Label = 'Carbon Black';    Rx = 'carbon ?black|\bcarbonblack\b|\bcbdefense\b|\bcbk7\b' },
+        @{ Label = 'Cylance';         Rx = 'cylance|\bcylancesvc\b|\bcylanceui\b' },
+        @{ Label = 'Webroot';         Rx = 'webroot|\bwrsa\b|\bwrcore\b|\bwrkrn\b' },
+        @{ Label = 'F-Secure';        Rx = 'f-secure|\bfshoster\b|\bfsorsp\b|\bfsdfwd\b' },
+        @{ Label = 'VIPRE';           Rx = '\bvipre\b|\bsbamsvc\b' },
+        @{ Label = 'Comodo';          Rx = 'comodo|\bcmdagent\b|\bcavwp\b' },
+        @{ Label = 'Panda';           Rx = 'panda ?security|\bpandasecurity\b|\bpavsrv\b|\bpsanhost\b' },
+        @{ Label = 'G DATA';          Rx = '\bgdata\b|\bg data\b|\bgdscan\b|\bavkwctl\b' }
+    )
+}
+
+# Qual fabricante casa com um texto (nome do serviço, caminho do binário, nome da
+# pasta)? Devolve o rótulo ('SentinelOne', 'Trend Micro'...) ou '' se nenhum. Pura.
+function Get-TISecurityVendor {
+    param([string]$Text)
+    $t = [string]$Text
+    if (-not $t) { return '' }
+    foreach ($v in (Get-TISecurityVendors)) {
+        if ($t -match ('(?i)(' + $v.Rx + ')')) { return [string]$v.Label }
+    }
+    return ''
+}
+
+# Expressão (com (?i)) do fabricante pelo rótulo, para casar os serviços dele. Pura.
+function Get-TISecurityVendorRx {
+    param([string]$Label)
+    foreach ($v in (Get-TISecurityVendors)) { if ($v.Label -eq $Label) { return ('(?i)(' + $v.Rx + ')') } }
+    return ''
+}
+
+# ImagePath de um serviço -> caminho do binário na instalação offline (ou '').
+# Trata aspas, \??\, \SystemRoot\, %SystemRoot%, system32\ e troca a letra da
+# unidade pela raiz offline. Regra pura.
+function Resolve-TIServiceImagePath {
+    param([string]$ImagePath, [string]$Root)
+    $c = ([string]$ImagePath).Trim()
+    if (-not $c) { return '' }
+    if ($c.StartsWith('"')) { $e = $c.IndexOf('"', 1); if ($e -gt 1) { $c = $c.Substring(1, $e - 1) } }
+    $m = [regex]::Match($c, '^(.*?\.(?:exe|sys|dll))(?=$|[\s",/])', 'IgnoreCase')
+    if ($m.Success) { $c = $m.Groups[1].Value }
+    $c = $c.Trim().Trim('"')
+    $r = ([string]$Root).TrimEnd('\')
+    if (-not $c -or -not $r) { return '' }
+    if ($c.StartsWith('\??\')) { $c = $c.Substring(4) }
+    if ($c -match '^(?i)\\SystemRoot\\(.+)$') { return (Join-TIWinPath ($r + '\Windows') $Matches[1]) }
+    if ($c -match '^(?i)%SystemRoot%\\(.+)$') { return (Join-TIWinPath ($r + '\Windows') $Matches[1]) }
+    if ($c -match '^(?i)system32\\(.+)$') { return (Join-TIWinPath ($r + '\Windows\System32') $Matches[1]) }
+    if ($c -match '^([A-Za-z]):\\(.+)$') { return (Join-TIWinPath ($r + '\') $Matches[2]) }
+    return ''
+}
+
+# $Path está dentro (ou é igual) de $Base? Comparação por texto, sem I/O. Pura.
+function Test-TIPathUnder {
+    param([string]$Path, [string]$Base)
+    $p = ([string]$Path).Trim().TrimEnd('\')
+    $b = ([string]$Base).Trim().TrimEnd('\')
+    if (-not $p -or -not $b) { return $false }
+    if ($p.Equals($b, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $p.StartsWith($b + '\', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# Serviço/driver essencial do Windows: nunca remover, mesmo que algo case. Pura.
+function Test-TICriticalService {
+    param([string]$Name)
+    $n = ([string]$Name).Trim().ToLowerInvariant()
+    if (-not $n) { return $true }
+    $crit = @('disk','volmgr','volmgrx','partmgr','vdrvroot','mountmgr','pci','acpi','intelppm','vmbus',
+              'storahci','stornvme','storvsc','iastorv','iastora','msahci','atapi','ataport','amdsata','amdxata',
+              'ntfs','refs','fltmgr','volsnap','fvevol','rdyboost','cng','ksecdd','ksecpkg','bam','spaceport',
+              'tcpip','tcpip6','netbt','afd','netio','ndis','ndisuio','ndu','http','dnscache','nsi','winmgmt','rpcss',
+              'dcomlaunch','plugplay','power','profsvc','gpsvc','lsm','samss','eventlog','schedule','themes',
+              'wininit','csrss','services','smss','trustedinstaller','wuauserv','bits','cryptsvc','msiserver',
+              'bootvid','clfs','msisadrv','pcw','wdf01000','wudfrd','wfplwfs','fileinfo','luafv','srv2',
+              'srvnet','mup','mrxsmb','bfe','mpssvc','windefend','wscsvc','sense','securityhealthservice',
+              'wdnissvc','wdfilter','wdboot','appinfo','usbhub3','usbxhci','hidusb','kbdclass','mouclass')
+    return ([bool]($crit -contains $n))
 }
 
 # Registro do Windows Installer de um produto (para o MSI não achar que ele ainda está instalado)
@@ -1026,6 +1148,241 @@ function Remove-TIMsiRegistration {
     return $n
 }
 
+# Roda um utilitário do System32 (icacls, attrib) com tempo limite. Mesmo molde do Invoke-TIRegExe.
+function Invoke-TISystem32Exe {
+    param([string]$Exe, [string]$Arguments, [int]$TimeoutSec = 300)
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo.FileName = Join-TIWinPath (Get-TISystem32) $Exe
+    $p.StartInfo.Arguments = $Arguments
+    $p.StartInfo.UseShellExecute = $false
+    $p.StartInfo.CreateNoWindow = $true
+    $p.StartInfo.RedirectStandardOutput = $true
+    $p.StartInfo.RedirectStandardError = $true
+    try {
+        $enc = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
+        $p.StartInfo.StandardOutputEncoding = $enc
+        $p.StartInfo.StandardErrorEncoding = $enc
+    } catch { }
+    try {
+        [void]$p.Start()
+        $o = $p.StandardOutput.ReadToEndAsync()
+        $e = $p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+            try { $p.Kill() } catch { }
+            return [pscustomobject]@{ Code = -1; Output = 'tempo esgotado' }
+        }
+        $p.WaitForExit()
+        $txt = ''
+        try { $txt = (([string]$o.Result + ' ' + [string]$e.Result) -replace '\s+', ' ').Trim() } catch { }
+        return [pscustomobject]@{ Code = [int]$p.ExitCode; Output = $txt }
+    } catch {
+        return [pscustomobject]@{ Code = -1; Output = $_.Exception.Message }
+    } finally {
+        try { $p.Dispose() } catch { }
+    }
+}
+
+# Toma posse e apaga à força a pasta travada pelo antivírus. NUNCA usa icacls /T
+# (ele seguiria junções): desce pasta por pasta por conta própria, pulando e tirando
+# as junções/links, dá posse+permissão por pasta (para conseguir listar) e, no arquivo
+# travado, dá posse+permissão só nele e apaga. Assim uma junção nunca é seguida.
+function Unlock-TIOfflineFolder {
+    param([string]$Folder)
+    $f = ([string]$Folder).TrimEnd('\')
+    if (-not $f) { return }
+    $root = $null
+    try { $root = New-Object System.IO.DirectoryInfo($f) } catch { return }
+    if (-not $root.Exists -or ([int]$root.Attributes -band 1024)) { return }   # topo é junção: não mexe
+    $dirs = New-Object System.Collections.ArrayList
+    $stack = New-Object System.Collections.Stack
+    $stack.Push($root); [void]$dirs.Add($root)
+    $guard = 0
+    while ($stack.Count -gt 0 -and $guard -lt 200000) {
+        $guard++
+        $d = $stack.Pop()
+        $qd = '"' + $d.FullName + '"'
+        # posse + herança só NESTA pasta (sem /T), para conseguir listar o conteúdo
+        [void](Invoke-TISystem32Exe -Exe 'icacls.exe' -Arguments ($qd + ' /setowner *S-1-5-32-544 /C /Q') -TimeoutSec 60)
+        [void](Invoke-TISystem32Exe -Exe 'icacls.exe' -Arguments ($qd + ' /reset /C /Q') -TimeoutSec 60)
+        try { $d.Refresh() } catch { }
+        $entries = @()
+        try { $entries = @($d.GetFileSystemInfos()) } catch { continue }
+        foreach ($e in $entries) {
+            if ([int]$e.Attributes -band 1024) { Remove-TILinkEntry $e; continue }   # junção/link: remove, não segue
+            if ($e -is [System.IO.DirectoryInfo]) { $stack.Push($e); [void]$dirs.Add($e); continue }
+            # tenta apagar direto primeiro; só o arquivo REALMENTE travado leva icacls (assim
+            # um arquivo comum/hardlink que já sai não tem a permissão mexida)
+            try { $e.Attributes = [System.IO.FileAttributes]::Normal } catch { }
+            try { $e.Delete() } catch { }
+            $still = $false
+            try { $e.Refresh(); $still = $e.Exists } catch { $still = $false }
+            if ($still) {
+                $qf = '"' + $e.FullName + '"'
+                [void](Invoke-TISystem32Exe -Exe 'icacls.exe' -Arguments ($qf + ' /setowner *S-1-5-32-544 /C /Q') -TimeoutSec 60)
+                [void](Invoke-TISystem32Exe -Exe 'icacls.exe' -Arguments ($qf + ' /grant *S-1-5-32-544:F /C /Q') -TimeoutSec 60)
+                try { $e.Attributes = [System.IO.FileAttributes]::Normal } catch { }
+                try { $e.Delete() } catch { }
+            }
+        }
+    }
+    # pastas de baixo para cima (sem recursão: a que ainda tiver algo em uso fica)
+    for ($i = $dirs.Count - 1; $i -ge 0; $i--) {
+        $d = $dirs[$i]
+        try {
+            $d.Refresh()
+            if ($d.Exists -and -not ([int]$d.Attributes -band 1024)) { $d.Delete($false) }
+        } catch { }
+    }
+}
+
+# Apaga a pasta inteira, com segunda tentativa destravando a permissão (antivírus).
+# Devolve 'apagada', 'ficou em parte (N)', 'mantida: <motivo>' ou 'a pasta já não existia'.
+function Remove-TIOfflineFolderHard {
+    param([string]$Folder, [string]$Root, [string[]]$Keep = @())
+    $folder = ([string]$Folder).TrimEnd('\')
+    if (-not $folder) { return 'sem pasta' }
+    $why = Test-TIRemovableProgramFolder -Folder $folder -Root $Root
+    if (-not $why -and (Test-TIFolderShared -Folder $folder -Others $Keep)) { $why = 'pasta usada por outro programa da lista' }
+    if (-not $why -and -not [System.IO.Directory]::Exists($folder)) { return 'a pasta já não existia' }
+    if (-not $why) {
+        $lnk = Find-TIPathLink -Path $folder -Base $Root
+        if ($lnk) { $why = ('há uma junção ou link no caminho ({0})' -f $lnk) }
+    }
+    if ($why) { return ('mantida: ' + $why) }
+    Clear-TISafeFolder -Path $folder
+    try { [System.IO.Directory]::Delete($folder, $false) } catch { }
+    if ([System.IO.Directory]::Exists($folder)) {
+        # o antivírus tranca a pasta dele: toma posse, devolve a permissão e tenta de novo
+        Unlock-TIOfflineFolder -Folder $folder
+        Clear-TISafeFolder -Path $folder
+        try { [System.IO.Directory]::Delete($folder, $false) } catch { }
+    }
+    if ([System.IO.Directory]::Exists($folder)) {
+        $left = @(Get-TISafeFiles -Path $folder -Max 1000).Count
+        return ('ficou em parte ({0} arquivo(s))' -f $left)
+    }
+    return 'apagada'
+}
+
+# Lê os serviços/drivers do control set atual do hive SYSTEM montado ($Hk sem 'HKLM\').
+function Read-TIOfflineServices {
+    param([string]$Hk, [string]$Root)
+    $sel = Read-TIHklmValues -Path ($Hk + '\Select') -Names @('Current')
+    $cur = 1
+    try { if ($sel -and $sel.ContainsKey('Current')) { $cur = [int]$sel['Current'] } } catch { }
+    if ($cur -lt 1) { $cur = 1 }
+    $cs = 'ControlSet{0:D3}' -f $cur
+    $base = $Hk + '\' + $cs + '\Services'
+    $out = New-Object System.Collections.ArrayList
+    foreach ($svc in @(Get-TIHklmSubKeys -Path $base)) {
+        $v = Read-TIHklmValues -Path ($base + '\' + $svc) -Names @('ImagePath', 'DisplayName', 'Description')
+        $img = $(if ($v -and $v.ContainsKey('ImagePath')) { [string]$v['ImagePath'] } else { '' })
+        $disp = $(if ($v -and $v.ContainsKey('DisplayName')) { [string]$v['DisplayName'] } else { '' })
+        $desc = $(if ($v -and $v.ContainsKey('Description')) { [string]$v['Description'] } else { '' })
+        [void]$out.Add([pscustomobject]@{
+            Name = [string]$svc; Display = $disp; Description = $desc; ImagePath = $img
+            Binary = (Resolve-TIServiceImagePath -ImagePath $img -Root $Root)
+        })
+    }
+    return [pscustomobject]@{ ControlSet = $cs; Base = $base; Services = @($out) }
+}
+
+# Dos serviços lidos, os que pertencem a este item: binário dentro das pastas dele,
+# ou (quando é antivírus) nome/caminho batendo com o fabricante. Nunca essenciais.
+function Select-TIItemServices {
+    param($Services, [string[]]$Folders, [string]$VendorRx = '')
+    $hit = New-Object System.Collections.ArrayList
+    foreach ($s in @($Services)) {
+        if (-not $s) { continue }
+        if (Test-TICriticalService -Name $s.Name) { continue }
+        $match = $false
+        if ($s.Binary) {
+            foreach ($f in @($Folders)) { if ($f -and (Test-TIPathUnder -Path $s.Binary -Base $f)) { $match = $true; break } }
+        }
+        if (-not $match -and $VendorRx) {
+            # Só o nome do serviço e o NOME do arquivo (não o caminho inteiro): evita
+            # casar um fabricante por um pedaço do caminho de um serviço sem relação.
+            # Split manual em \ ou / (não depende do separador do SO).
+            $leaf = ''
+            if ($s.Binary) { $parts = ([string]$s.Binary) -split '[\\/]'; $leaf = [string]$parts[$parts.Length - 1] }
+            if (([string]$s.Name + ' ' + $leaf) -match $VendorRx) { $match = $true }
+        }
+        if ($match) { [void]$hit.Add($s) }
+    }
+    return @($hit)
+}
+
+# Pastas de dados (ProgramData) e de instalação (Program Files/x86) cujo NOME casa com
+# um fabricante de antivírus. Usado para achar restos e apagar os dados do produto.
+function Get-TIVendorFolders {
+    param([string]$Root, [string]$VendorRx)
+    $out = New-Object System.Collections.ArrayList
+    $bases = @('ProgramData', 'Program Files', 'Program Files (x86)')
+    foreach ($b in $bases) {
+        $dir = $null
+        try { $dir = New-Object System.IO.DirectoryInfo((Join-TIWinPath ($Root.TrimEnd('\')) $b)) } catch { continue }
+        if (-not $dir.Exists) { continue }
+        $subs = @()
+        try { $subs = @($dir.GetDirectories()) } catch { continue }
+        foreach ($s in $subs) {
+            if ([int]$s.Attributes -band 1024) { continue }   # pula junções
+            if ($VendorRx -and ($s.Name -match $VendorRx)) { [void]$out.Add($s.FullName) }
+        }
+    }
+    return @($out)
+}
+
+# Restos de antivírus/segurança que NÃO estão na lista de desinstalar (já foram removidos
+# pela metade, ou nunca tiveram entrada): agrupa por fabricante os serviços e as pastas.
+function Get-TIOfflineAvLeftovers {
+    param([string]$Root, $Services, [string[]]$KnownFolders = @(), [string[]]$KnownVendors = @())
+    $known = @(@($KnownFolders) | Where-Object { $_ } | ForEach-Object { ([string]$_).TrimEnd('\') })
+    # Fabricante que AINDA está na lista de programas não vira "resto": a remoção
+    # normal dele já tira pasta/serviços/dados de raiz (evita item duplicado).
+    $knownV = @(@($KnownVendors) | Where-Object { $_ })
+    $byVendor = @{}
+    $addFolder = {
+        param($Label, $Path)
+        $pp = ([string]$Path).TrimEnd('\')
+        if (-not $pp) { return }
+        foreach ($k in $known) { if (Test-TIPathUnder -Path $pp -Base $k) { return } }  # já é um programa da lista
+        if (-not $byVendor.ContainsKey($Label)) { $byVendor[$Label] = [pscustomobject]@{ Services = (New-Object System.Collections.ArrayList); Folders = (New-Object System.Collections.ArrayList) } }
+        if (@($byVendor[$Label].Folders) -notcontains $pp) { [void]$byVendor[$Label].Folders.Add($pp) }
+    }
+    # serviços/drivers com nome ou caminho de fabricante
+    foreach ($s in @($Services)) {
+        if (-not $s) { continue }
+        if (Test-TICriticalService -Name $s.Name) { continue }
+        $label = Get-TISecurityVendor -Text ([string]$s.Name + ' ' + [string]$s.Display + ' ' + [string]$s.ImagePath)
+        if (-not $label) { continue }
+        if ($knownV -contains $label) { continue }
+        $inKnown = $false
+        if ($s.Binary) { foreach ($k in $known) { if (Test-TIPathUnder -Path $s.Binary -Base $k) { $inKnown = $true; break } } }
+        if ($inKnown) { continue }
+        if (-not $byVendor.ContainsKey($label)) { $byVendor[$label] = [pscustomobject]@{ Services = (New-Object System.Collections.ArrayList); Folders = (New-Object System.Collections.ArrayList) } }
+        [void]$byVendor[$label].Services.Add([string]$s.Name)
+    }
+    # pastas de instalação/dados com nome de fabricante
+    foreach ($v in (Get-TISecurityVendors)) {
+        if ($knownV -contains $v.Label) { continue }
+        foreach ($p in @(Get-TIVendorFolders -Root $Root -VendorRx ('(?i)(' + $v.Rx + ')'))) { & $addFolder $v.Label $p }
+    }
+    $items = New-Object System.Collections.ArrayList
+    foreach ($label in @($byVendor.Keys)) {
+        $g = $byVendor[$label]
+        if (@($g.Services).Count -eq 0 -and @($g.Folders).Count -eq 0) { continue }
+        $folders = @($g.Folders)
+        [void]$items.Add([pscustomobject]@{
+            Name = ($label + ' (restos)'); Version = ''; Publisher = $label; Folder = $(if ($folders.Count) { $folders[0] } else { '' })
+            Original = ''; FolderSource = ''; FolderNote = ''; Size = -1.0; Scope = 'Resto'; User = ''
+            Hive = ''; KeyPath = ''; KeyName = ''; Msi = $false; ProductCode = ''
+            Protected = $false; Sensitive = $true; Reason = ('antivírus/segurança: ' + $label)
+            Leftover = $true; Vendor = $label; Services = @($g.Services); Folders = $folders
+        })
+    }
+    return @($items | Sort-Object Name)
+}
+
 # Remoção forçada (offline) dos programas marcados. -KeepFolders: pastas dos programas
 # da lista que NÃO serão removidos (pasta compartilhada fica). Resumo por programa.
 function Remove-TIOfflinePrograms {
@@ -1034,7 +1391,7 @@ function Remove-TIOfflinePrograms {
     if (-not (Clear-TIOfflineHives)) { throw 'Há um registro offline aberto que não fechou: reinicie o pendrive antes de remover programas.' }
     $drive = ConvertTo-TIDriveLetter ([string]$Install.Drive)
     $root = $drive + '\'
-    $Items = @($Items | Where-Object { $_ -and $_.Name -and $_.KeyName })
+    $Items = @($Items | Where-Object { $_ -and $_.Name -and ($_.KeyName -or $_.Leftover) })
     if ($Items.Count -eq 0) { Emit 'Nenhum programa marcado.' 'Warn'; return }
 
     # atalhos: Menu Iniciar de todos os usuários, área de trabalho pública e de cada usuário
@@ -1054,59 +1411,78 @@ function Remove-TIOfflinePrograms {
     $i = 0
     foreach ($it in $Items) {
         $i++
-        $r = [pscustomobject]@{ Name = [string]$it.Name; Folder = ''; Shortcuts = 0; Registry = ''; Level = 'Success'; Item = $it }
+        $r = [pscustomobject]@{ Name = [string]$it.Name; Folder = ''; Shortcuts = 0; Registry = ''; Services = 0
+                                Level = 'Success'; Item = $it; RFolders = @(); RVendorRx = '' }
         [void]$results.Add($r)
-        # Runtime/antivírus não trava mais: só avisa e remove assim mesmo (pedido do técnico).
         $prot = Get-TIProgramProtection -Name ([string]$it.Name) -Publisher ([string]$it.Publisher)
         if ($prot) { Emit ('{0}: atenção, {1}. Removendo mesmo assim.' -f $it.Name, $prot) 'Warn' }
-        Emit ('Removendo {0} ({1}/{2})...' -f $it.Name, $i, $Items.Count) 'Info' ([int](5 + 70 * $i / $Items.Count))
-        $folder = ([string]$it.Folder).TrimEnd('\')
-        $why = Test-TIRemovableProgramFolder -Folder $folder -Root $root
-        if (-not $why -and (Test-TIFolderShared -Folder $folder -Others $KeepFolders)) { $why = 'pasta usada por outro programa da lista' }
-        if (-not $why -and -not [System.IO.Directory]::Exists($folder)) { $why = 'a pasta já não existia' }
-        if (-not $why) {
-            $lnk = Find-TIPathLink -Path $folder -Base $root
-            if ($lnk) { $why = ('há uma junção ou link no caminho ({0})' -f $lnk) }
+        Emit ('Removendo {0} ({1}/{2})...' -f $it.Name, $i, $Items.Count) 'Info' ([int](5 + 60 * $i / $Items.Count))
+
+        # Fabricante (antivírus) deste item: pelo rótulo do resto, ou pelo nome/editor.
+        $vendor = ''
+        if ($it.PSObject.Properties['Vendor'] -and [string]$it.Vendor) { $vendor = [string]$it.Vendor }
+        else { $vendor = Get-TISecurityVendor -Text ([string]$it.Name + ' ' + [string]$it.Publisher) }
+        $vendorRx = $(if ($vendor) { Get-TISecurityVendorRx -Label $vendor } else { '' })
+
+        # Pastas do item: instalação + (quando antivírus) pastas do fabricante em
+        # Arquivos de Programas e ProgramData (apaga os dados também).
+        $folders = New-Object System.Collections.ArrayList
+        if ($it.PSObject.Properties['Folders'] -and @($it.Folders).Count) {
+            foreach ($f in @($it.Folders)) { if ($f) { [void]$folders.Add(([string]$f).TrimEnd('\')) } }
+        } elseif ([string]$it.Folder) {
+            [void]$folders.Add(([string]$it.Folder).TrimEnd('\'))
         }
-        if ($why) {
-            $r.Folder = 'mantida: ' + $why
-        } else {
-            # mesma limpeza segura da Manutenção: nunca entra em junções/links
-            Clear-TISafeFolder -Path $folder
-            try { [System.IO.Directory]::Delete($folder, $false) } catch { }
-            if ([System.IO.Directory]::Exists($folder)) {
-                $left = @(Get-TISafeFiles -Path $folder -Max 1000).Count
-                $r.Folder = ('ficou em parte ({0} arquivo(s))' -f $left)
-                $r.Level = 'Error'
-                Emit ('{0}: a pasta {1} não foi apagada por inteiro ({2} arquivo(s) ficaram).' -f $it.Name, $folder, $left) 'Error'
-            } else {
-                $r.Folder = 'apagada'
+        if ($vendorRx) {
+            foreach ($vf in @(Get-TIVendorFolders -Root $root -VendorRx $vendorRx)) {
+                $vft = ([string]$vf).TrimEnd('\')
+                if (@($folders) -notcontains $vft) { [void]$folders.Add($vft) }
             }
-            # atalhos que apontam para a pasta (e a pasta do Menu Iniciar que ficar vazia)
-            foreach ($l in @($lnks)) {
-                $hit = $false
-                try { $hit = Test-TILnkPointsTo -Bytes ([System.IO.File]::ReadAllBytes($l)) -Folder $folder } catch { }
-                if (-not $hit) { continue }
-                try {
-                    [System.IO.File]::SetAttributes($l, [System.IO.FileAttributes]::Normal)
-                    [System.IO.File]::Delete($l)
-                    $r.Shortcuts++
-                    [void]$lnks.Remove($l)
-                    $dir = [System.IO.Path]::GetDirectoryName($l)
-                    $leaf = [System.IO.Path]::GetFileName($dir)
-                    if ($leaf -ine 'Programs' -and $leaf -ine 'Desktop' -and $leaf -ine 'Startup' -and
-                        @([System.IO.Directory]::GetFileSystemEntries($dir)).Count -eq 0) {
-                        [System.IO.Directory]::Delete($dir, $false)
-                    }
-                } catch { }
+        }
+        $r.RVendorRx = $vendorRx
+
+        # Apaga cada pasta (destravando a permissão quando o antivírus a tranca). SÓ as
+        # pastas que de fato dá para apagar (passaram na validação do Remove-TIOfflineFolderHard:
+        # nunca raiz de unidade, Windows, Common Files ou pasta compartilhada) entram no
+        # casamento de serviços. Assim um item com pasta de sistema NUNCA casa serviços.
+        $msgs = New-Object System.Collections.ArrayList
+        $usable = New-Object System.Collections.ArrayList
+        foreach ($f in @($folders)) {
+            $res = Remove-TIOfflineFolderHard -Folder $f -Root $root -Keep $KeepFolders
+            [void]$msgs.Add($res)
+            if ($res -like 'ficou em parte*') { $r.Level = 'Error' }
+            # allowlist explícita: só pasta que realmente foi mexida entra no casamento de serviços
+            if ($res -match '^(apagada|ficou em parte)') { if (@($usable) -notcontains $f) { [void]$usable.Add($f) } }
+        }
+        $r.RFolders = @($usable)
+        $r.Folder = $(if (@($msgs).Count) { (@($msgs) -join '; ') } else { 'sem pasta de instalação' })
+
+        # Atalhos que apontam para uma pasta de fato removida do item.
+        foreach ($l in @($lnks)) {
+            $hit = $false
+            foreach ($f in @($usable)) {
+                try { if (Test-TILnkPointsTo -Bytes ([System.IO.File]::ReadAllBytes($l)) -Folder $f) { $hit = $true; break } } catch { }
             }
+            if (-not $hit) { continue }
+            try {
+                [System.IO.File]::SetAttributes($l, [System.IO.FileAttributes]::Normal)
+                [System.IO.File]::Delete($l)
+                $r.Shortcuts++
+                [void]$lnks.Remove($l)
+                $dir = [System.IO.Path]::GetDirectoryName($l)
+                $leaf = [System.IO.Path]::GetFileName($dir)
+                if ($leaf -ine 'Programs' -and $leaf -ine 'Desktop' -and $leaf -ine 'Startup' -and
+                    @([System.IO.Directory]::GetFileSystemEntries($dir)).Count -eq 0) {
+                    [System.IO.Directory]::Delete($dir, $false)
+                }
+            } catch { }
         }
     }
 
-    # registro: um hive montado por vez (máquina e cada NTUSER.DAT)
+    # Desinstalação no registro: um hive por vez. Só itens com chave (restos não têm).
     $groups = @{}
     foreach ($r in $results) {
         if ($r.Registry) { continue }
+        if (-not [string]$r.Item.KeyName) { continue }
         $h = [string]$r.Item.Hive
         if (-not $groups.ContainsKey($h)) { $groups[$h] = New-Object System.Collections.ArrayList }
         [void]$groups[$h].Add($r)
@@ -1140,15 +1516,68 @@ function Remove-TIOfflinePrograms {
         }
     }
 
+    # Serviços e drivers no hive SYSTEM: o antivírus deixa um serviço/driver que
+    # faz ele voltar. Remove os que são do programa (binário na pasta dele ou nome
+    # do fabricante), de TODOS os control sets, nunca os essenciais do Windows.
+    Emit 'Procurando serviços e drivers dos programas removidos...' 'Info' 82
+    $skey = $null
+    try {
+        $skey = Mount-TIOfflineHive -Path ($root + 'Windows\System32\config\SYSTEM')
+        $shk = $skey -replace '^HKLM\\', ''
+        $scan = Read-TIOfflineServices -Hk $shk -Root $root
+        $toRemove = @{}
+        foreach ($r in $results) {
+            $names = @{}
+            # Restos: a lista EXPLÍCITA de serviços detectada na listagem (já conferida
+            # contra o fabricante e vista pelo técnico quando marcou o item).
+            if ($r.Item.PSObject.Properties['Services']) {
+                foreach ($sn in @($r.Item.Services)) { if ($sn -and -not (Test-TICriticalService -Name $sn)) { $names[[string]$sn] = $true } }
+            }
+            # Casar pelos arquivos (só pastas validadas) e pelo fabricante (nome do serviço/arquivo).
+            if (@($r.RFolders).Count -or [string]$r.RVendorRx) {
+                foreach ($s in @(Select-TIItemServices -Services $scan.Services -Folders @($r.RFolders) -VendorRx ([string]$r.RVendorRx))) { $names[[string]$s.Name] = $true }
+            }
+            foreach ($n in @($names.Keys)) {
+                $r.Services++
+                $toRemove[$n] = $true
+                Emit ('{0}: serviço/driver {1} marcado para remover.' -f $r.Name, $n) 'Debug'
+            }
+        }
+        if ($toRemove.Count -gt 0) {
+            $sets = @(Get-TIHklmSubKeys -Path $shk | Where-Object { $_ -match '^(?i)ControlSet\d{3}$' })
+            if (-not $sets.Count) { $sets = @($scan.ControlSet) }
+            $done = 0
+            foreach ($name in @($toRemove.Keys)) {
+                if (Test-TICriticalService -Name $name) { continue }   # trava final: nunca um serviço essencial
+                $hit = $false
+                foreach ($cs in $sets) {
+                    try { if (Remove-TIHklmSubKeyTree -Parent ($shk + '\' + $cs + '\Services') -Name $name) { $hit = $true } } catch { }
+                }
+                if ($hit) { $done++ }
+            }
+            Emit ('{0} serviço(s)/driver(s) removido(s) do registro SYSTEM.' -f $done) 'Success'
+        }
+    } catch {
+        Emit ('Não foi possível tratar os serviços no registro SYSTEM: {0}' -f $_.Exception.Message) 'Warn'
+    } finally {
+        if ($skey) { [void](Dismount-TIOfflineHive -Key $skey) }
+    }
+
     $ok = 0
     foreach ($r in $results) {
-        if ($r.Level -eq 'Success' -and $r.Folder -match '^mantida' -and $r.Folder -notmatch 'não existia|sem pasta') { $r.Level = 'Warn' }
-        $txt = ('{0}: pasta {1}; {2} atalho(s); registro {3}.' -f $r.Name, $r.Folder, $r.Shortcuts, $r.Registry)
+        if ($r.Level -eq 'Success' -and $r.Folder -match 'ficou em parte') { $r.Level = 'Error' }
+        $svcTxt = $(if ($r.Services -gt 0) { '; {0} serviço(s)/driver(s)' -f $r.Services } else { '' })
+        $regTxt = $(if ($r.Registry) { $r.Registry } else { 'não se aplica' })
+        $txt = ('{0}: pasta {1}; {2} atalho(s); registro {3}{4}.' -f $r.Name, $r.Folder, $r.Shortcuts, $regTxt, $svcTxt)
         Emit $txt $(if ($r.Level -eq 'Error') { 'Warn' } else { $r.Level })
-        if ($r.Level -ne 'Error' -and $r.Registry -ne 'mantido') { $ok++ }
+        if ($r.Level -ne 'Error') { $ok++ }
     }
-    Emit ('Remoção offline: {0} de {1} programa(s) removido(s).' -f $ok, $results.Count) $(if ($ok -eq $results.Count) { 'Success' } else { 'Warn' }) 100
-    foreach ($r in $results) { $r.PSObject.Properties.Remove('Item') }
+    Emit ('Remoção offline: {0} de {1} item(ns) sem erro.' -f $ok, $results.Count) $(if ($ok -eq $results.Count) { 'Success' } else { 'Warn' }) 100
+    foreach ($r in $results) {
+        $r.PSObject.Properties.Remove('Item')
+        $r.PSObject.Properties.Remove('RFolders')
+        $r.PSObject.Properties.Remove('RVendorRx')
+    }
     return $results.ToArray()
 }
 '@

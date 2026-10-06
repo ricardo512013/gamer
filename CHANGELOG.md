@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.5.4
+
+### Remoção de antivírus "de raiz" (modo recuperação / boot)
+- A remoção offline de programas agora **arranca o antivírus de verdade**, não só a entrada da lista. Para o programa
+  marcado, além da pasta, dos atalhos e da entrada de desinstalação, o TI Suite também remove:
+  - os **serviços e drivers** dele no registro **SYSTEM** (em todos os control sets) — é o que fazia o antivírus
+    "voltar" depois de apagar;
+  - as **pastas de dados** do fabricante (ProgramData e Arquivos de Programas);
+  - e, quando o antivírus **tranca a própria pasta** com permissão (ex.: SentinelOne), o TI Suite **toma posse e
+    devolve a permissão** (icacls) para conseguir apagar.
+- **Funciona para qualquer antivírus**, por uma lista de fabricantes: SentinelOne, Trend Micro, McAfee, Sophos, ESET,
+  Kaspersky, Avast/AVG, Avira, Norton/Symantec, Bitdefender, Malwarebytes, CrowdStrike, Carbon Black, Cylance, Webroot,
+  F-Secure, VIPRE, Comodo, Panda e G DATA.
+- **Nunca** toca nos serviços essenciais do Windows (lista de proteção) nem nas pastas do sistema (System32, raízes de
+  Arquivos de Programas). O Windows Defender não entra na remoção automática (é componente do Windows).
+
+### Acha os "restos" que sobraram
+- Ao **Listar programas** no modo recuperação, o TI Suite também procura **restos de antivírus** — serviços, drivers e
+  pastas que ficaram de uma remoção anterior pela metade (quando o programa **sumiu da lista mas continuou no PC**).
+  Eles aparecem como **"<Fabricante> (restos)"**; é só marcar e remover para limpar o que ficou.
+
 ## 1.5.3
 
 ### Programas: nada fica mais travado
