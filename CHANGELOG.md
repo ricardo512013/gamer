@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.5.5
+
+### Remoção offline agora apaga TUDO do fabricante (não só a pasta e a chave de desinstalação)
+Além do que a 1.5.4 já tirava (pasta, atalhos, entrada de desinstalação, registro do MSI, serviços e drivers no
+registro SYSTEM), a remoção offline agora também apaga:
+- **Arquivo do driver (`.sys`)** do serviço removido (antes só a chave do serviço saía; o arquivo ficava no disco).
+  Só quando o `.sys` está numa pasta removida ou o nome casa com o fabricante.
+- **Chaves de configuração do fabricante** no registro: `HKLM\SOFTWARE\<Fabricante>` e no `WOW6432Node`, e
+  `Software\<Fabricante>` no perfil de cada usuário (`NTUSER.DAT`).
+- **Inicialização automática** (`Run` e `RunOnce`, da máquina e de cada usuário) que aponta para uma pasta removida
+  ou casa com o fabricante.
+- **Tarefas agendadas** do fabricante: a árvore no registro (`TaskCache\Tree`) e os arquivos em
+  `Windows\System32\Tasks`.
+- O fabricante é reconhecido pelo **nome da pasta dele** (1º nível em Arquivos de Programas/ProgramData) e pela lista de
+  antivírus. **Nunca** apaga chaves de topo do Windows nem guarda-chuvas grandes (Microsoft, Windows, Classes, Google,
+  etc.), serviços essenciais ou pastas do sistema.
+- O resumo e o laudo passam a mostrar quantas chaves de configuração, entradas de inicialização e tarefas agendadas
+  foram removidas.
+
 ## 1.5.4
 
 ### Remoção de antivírus "de raiz" (modo recuperação / boot)

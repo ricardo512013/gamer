@@ -252,6 +252,35 @@ function Remove-TIHklmSubKeyTree {
     }
 }
 
+# Todos os valores de uma chave (nome -> dado como texto, sem expandir %VAR%).
+function Get-TIHklmValueMap {
+    param([string]$Path)
+    $out = @{}
+    $k = $null
+    try {
+        $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($Path, $false)
+        if ($k) {
+            foreach ($n in @($k.GetValueNames())) {
+                try { $out[[string]$n] = [string]$k.GetValue($n, '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } catch { }
+            }
+        }
+    } catch { } finally { if ($k) { try { $k.Close() } catch { } } }
+    return $out
+}
+
+# Apaga um VALOR de uma chave. $false = não existia (ou não deu).
+function Remove-TIHklmValue {
+    param([string]$Parent, [string]$Name)
+    $k = $null
+    try {
+        $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($Parent, $true)
+        if (-not $k) { return $false }
+        if (@($k.GetValueNames()) -notcontains $Name) { return $false }
+        $k.DeleteValue($Name, $false)
+        return $true
+    } catch { return $false } finally { if ($k) { try { $k.Close() } catch { } } }
+}
+
 # reg.exe com tempo limite, sem laço do PowerShell (funciona até no finally de
 # uma tarefa cancelada). Saída na página OEM.
 function Invoke-TIRegExe {
@@ -1120,6 +1149,60 @@ function Test-TICriticalService {
     return ([bool]($crit -contains $n))
 }
 
+# Nome da chave do fabricante no registro, deduzido das pastas removidas: o 1º nível
+# abaixo de Arquivos de Programas ou ProgramData (ex.: ...\Program Files\SentinelOne\x
+# -> "SentinelOne"). Costuma ser o mesmo nome em HKLM\SOFTWARE\<nome>. Regra pura.
+function Get-TIVendorKeyNames {
+    param([string[]]$Folders)
+    $out = New-Object System.Collections.ArrayList
+    foreach ($f in @($Folders)) {
+        foreach ($rx in @('(?i)\\Program Files(?: \(x86\))?\\([^\\]+)', '(?i)\\ProgramData\\([^\\]+)')) {
+            $m = [regex]::Match([string]$f, $rx)
+            if ($m.Success) {
+                $n = $m.Groups[1].Value.Trim()
+                if ($n -and -not (Test-TIProtectedSoftwareKey -Name $n) -and (@($out) -notcontains $n)) { [void]$out.Add($n) }
+            }
+        }
+    }
+    return @($out)
+}
+
+# Chave de topo do HKLM\SOFTWARE (ou Software do usuário) que NUNCA se apaga: componentes
+# do Windows e guarda-chuvas gigantes de terceiros. Regra pura.
+function Test-TIProtectedSoftwareKey {
+    param([string]$Name)
+    $n = ([string]$Name).Trim().ToLowerInvariant()
+    if (-not $n -or $n.Length -lt 3) { return $true }
+    $crit = @('microsoft','windows','classes','clients','policies','wow6432node','registeredapplications',
+              'odbc','khronos','default','setup','rpc','intel','realtek','nvidia','advanced micro devices',
+              'amd','google','mozilla','oracle','java','adobe','apple','dropbox','valve','wow6432')
+    return ([bool]($crit -contains $n))
+}
+
+# Dos valores de uma chave Run/RunOnce (hashtable nome->dado), quais remover: o dado
+# aponta para uma pasta removida, ou o nome/dado casa com o fabricante. Regra pura.
+function Select-TIRunValues {
+    param([hashtable]$Values, [string[]]$Folders, [string]$VendorRx = '')
+    $out = New-Object System.Collections.ArrayList
+    if (-not $Values) { return @($out) }
+    foreach ($name in @($Values.Keys)) {
+        $data = [string]$Values[$name]
+        $hit = $false
+        # o dado aponta para uma pasta removida: compara SEM a letra da unidade (o dado usa
+        # a letra do Windows do disco, ex. C:, e a pasta removida usa a do Windows PE, ex. D:).
+        if ($data) {
+            foreach ($f in @($Folders)) {
+                if (-not $f) { continue }
+                $suffix = ([string]$f) -replace '^[A-Za-z]:', ''
+                if ($suffix -and ($data -match ([regex]::Escape($suffix) + '($|\\)'))) { $hit = $true; break }
+            }
+        }
+        if (-not $hit -and $VendorRx) { if (($name + ' ' + $data) -match $VendorRx) { $hit = $true } }
+        if ($hit -and (@($out) -notcontains $name)) { [void]$out.Add($name) }
+    }
+    return @($out)
+}
+
 # Registro do Windows Installer de um produto (para o MSI não achar que ele ainda está instalado)
 function Remove-TIMsiRegistration {
     param([string]$Hk, [string]$ProductCode)
@@ -1383,6 +1466,96 @@ function Get-TIOfflineAvLeftovers {
     return @($items | Sort-Object Name)
 }
 
+# Limpeza "de raiz" do que sobra do fabricante, fora da pasta e da chave de desinstalação:
+# chaves de configuração (HKLM\SOFTWARE e WOW6432Node, e Software de cada usuário),
+# inicialização automática (Run/RunOnce) e tarefas agendadas (registro + arquivos).
+# Só casa pelo NOME do fabricante (nome da pasta dele ou expressão do antivírus), nunca
+# chaves de topo do Windows/guarda-chuvas (Test-TIProtectedSoftwareKey).
+function Remove-TIOfflineVendorTraces {
+    param([Parameter(Mandatory)]$Install, $Targets)
+    $drive = ConvertTo-TIDriveLetter ([string]$Install.Drive)
+    $root = $drive + '\'
+    $res = [pscustomobject]@{ RegKeys = 0; Run = 0; Tasks = 0 }
+    $keyNames = @{}
+    $rxList = New-Object System.Collections.ArrayList
+    $folders = New-Object System.Collections.ArrayList
+    foreach ($t in @($Targets)) {
+        if (-not $t) { continue }
+        foreach ($k in @($t.KeyNames)) { if ($k) { $keyNames[[string]$k] = $true } }
+        if ([string]$t.VendorRx -and (@($rxList) -notcontains [string]$t.VendorRx)) { [void]$rxList.Add([string]$t.VendorRx) }
+        foreach ($f in @($t.Folders)) { if ($f) { [void]$folders.Add([string]$f) } }
+    }
+    if ($keyNames.Count -eq 0 -and @($rxList).Count -eq 0) { return $res }
+    $rxAll = (@($rxList) -join '|')
+    $matchName = {
+        param($Name)
+        $nm = [string]$Name
+        if (-not $nm -or (Test-TIProtectedSoftwareKey -Name $nm)) { return $false }
+        if ($keyNames.ContainsKey($nm)) { return $true }
+        foreach ($rx in @($rxList)) { if ($nm -match $rx) { return $true } }
+        return $false
+    }
+    $removeFromRunKeys = {
+        param([string[]]$RunBases)
+        foreach ($rb in @($RunBases)) {
+            foreach ($vn in @(Select-TIRunValues -Values (Get-TIHklmValueMap -Path $rb) -Folders @($folders) -VendorRx $rxAll)) {
+                if (Remove-TIHklmValue -Parent $rb -Name $vn) { $res.Run++; Emit ('Inicialização automática removida: {0}' -f $vn) 'Debug' }
+            }
+        }
+    }
+    # ---- SOFTWARE (máquina) ----
+    $key = $null
+    try {
+        $key = Mount-TIOfflineHive -Path ($root + 'Windows\System32\config\SOFTWARE')
+        $hk = $key -replace '^HKLM\\', ''
+        foreach ($base in @($hk, ($hk + '\WOW6432Node'))) {
+            foreach ($sub in @(Get-TIHklmSubKeys -Path $base)) {
+                if ((& $matchName $sub) -and (Remove-TIHklmSubKeyTree -Parent $base -Name $sub)) { $res.RegKeys++; Emit ('Chave do fabricante removida: SOFTWARE\...\{0}' -f $sub) 'Debug' }
+            }
+        }
+        & $removeFromRunKeys @(
+            $hk + '\Microsoft\Windows\CurrentVersion\Run', $hk + '\Microsoft\Windows\CurrentVersion\RunOnce',
+            $hk + '\WOW6432Node\Microsoft\Windows\CurrentVersion\Run', $hk + '\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce')
+        $treeBase = $hk + '\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree'
+        foreach ($t in @(Get-TIHklmSubKeys -Path $treeBase)) {
+            if ((& $matchName $t) -and (Remove-TIHklmSubKeyTree -Parent $treeBase -Name $t)) { $res.Tasks++; Emit ('Tarefa agendada (registro) removida: {0}' -f $t) 'Debug' }
+        }
+    } catch { Emit ('Não foi possível limpar o SOFTWARE do fabricante: {0}' -f $_.Exception.Message) 'Warn' }
+    finally { if ($key) { [void](Dismount-TIOfflineHive -Key $key) } }
+    # ---- por usuário (NTUSER.DAT): Software\<fabricante> e Run/RunOnce ----
+    $users = @(); try { $users = @(Get-TIOfflineUsers -Install $Install) } catch { }
+    foreach ($u in $users) {
+        $nt = Join-TIWinPath $u.Path 'NTUSER.DAT'
+        if (-not [System.IO.File]::Exists($nt)) { continue }
+        $uk = $null
+        try {
+            $uk = Mount-TIOfflineHive -Path $nt
+            $uh = $uk -replace '^HKLM\\', ''
+            foreach ($sub in @(Get-TIHklmSubKeys -Path ($uh + '\Software'))) {
+                if ((& $matchName $sub) -and (Remove-TIHklmSubKeyTree -Parent ($uh + '\Software') -Name $sub)) { $res.RegKeys++ }
+            }
+            & $removeFromRunKeys @($uh + '\Software\Microsoft\Windows\CurrentVersion\Run', $uh + '\Software\Microsoft\Windows\CurrentVersion\RunOnce')
+        } catch { } finally { if ($uk) { [void](Dismount-TIOfflineHive -Key $uk) } }
+    }
+    # ---- arquivos das tarefas agendadas (Windows\System32\Tasks\<fabricante>) ----
+    $tasksRoot = $root + 'Windows\System32\Tasks'
+    $td = $null
+    try { $td = New-Object System.IO.DirectoryInfo($tasksRoot) } catch { $td = $null }
+    if ($td -and $td.Exists -and -not ([int]$td.Attributes -band 1024)) {
+        $kids = @(); try { $kids = @($td.GetFileSystemInfos()) } catch { $kids = @() }
+        foreach ($e in $kids) {
+            if ([int]$e.Attributes -band 1024) { continue }   # nunca segue junção
+            if (-not (& $matchName $e.Name)) { continue }
+            try {
+                if ($e -is [System.IO.DirectoryInfo]) { Clear-TISafeFolder -Path $e.FullName; [System.IO.Directory]::Delete($e.FullName, $false) }
+                else { [System.IO.File]::SetAttributes($e.FullName, [System.IO.FileAttributes]::Normal); [System.IO.File]::Delete($e.FullName) }
+                $res.Tasks++
+            } catch { }
+        }
+    }
+    return $res
+}
+
 # Remoção forçada (offline) dos programas marcados. -KeepFolders: pastas dos programas
 # da lista que NÃO serão removidos (pasta compartilhada fica). Resumo por programa.
 function Remove-TIOfflinePrograms {
@@ -1525,6 +1698,15 @@ function Remove-TIOfflinePrograms {
         $skey = Mount-TIOfflineHive -Path ($root + 'Windows\System32\config\SYSTEM')
         $shk = $skey -replace '^HKLM\\', ''
         $scan = Read-TIOfflineServices -Hk $shk -Root $root
+        $svcBinary = @{}
+        foreach ($s in @($scan.Services)) { if ($s -and $s.Name) { $svcBinary[[string]$s.Name] = [string]$s.Binary } }
+        $drvFolders = New-Object System.Collections.ArrayList
+        $drvRx = New-Object System.Collections.ArrayList
+        foreach ($r in $results) {
+            foreach ($f in @($r.RFolders)) { if ($f) { [void]$drvFolders.Add([string]$f) } }
+            if ([string]$r.RVendorRx -and (@($drvRx) -notcontains [string]$r.RVendorRx)) { [void]$drvRx.Add([string]$r.RVendorRx) }
+        }
+        $drvRxAll = (@($drvRx) -join '|')
         $toRemove = @{}
         foreach ($r in $results) {
             $names = @{}
@@ -1553,7 +1735,21 @@ function Remove-TIOfflinePrograms {
                 foreach ($cs in $sets) {
                     try { if (Remove-TIHklmSubKeyTree -Parent ($shk + '\' + $cs + '\Services') -Name $name) { $hit = $true } } catch { }
                 }
-                if ($hit) { $done++ }
+                if ($hit) {
+                    $done++
+                    # apaga também o arquivo .sys do driver (a chave já saiu; isto tira o arquivo),
+                    # só quando ele está numa pasta removida OU o nome casa com o fabricante.
+                    $bin = [string]$svcBinary[$name]
+                    if ($bin -and $bin -match '(?i)\.sys$' -and [System.IO.File]::Exists($bin)) {
+                        $leaf = ($bin -split '[\\/]')[-1]
+                        $okFile = $false
+                        foreach ($f in @($drvFolders)) { if ($f -and (Test-TIPathUnder -Path $bin -Base $f)) { $okFile = $true; break } }
+                        if (-not $okFile -and $drvRxAll -and ($leaf -match $drvRxAll)) { $okFile = $true }
+                        if ($okFile) {
+                            try { [System.IO.File]::SetAttributes($bin, [System.IO.FileAttributes]::Normal); [System.IO.File]::Delete($bin); Emit ('Driver removido do disco: {0}' -f $leaf) 'Debug' } catch { }
+                        }
+                    }
+                }
             }
             Emit ('{0} serviço(s)/driver(s) removido(s) do registro SYSTEM.' -f $done) 'Success'
         }
@@ -1561,6 +1757,22 @@ function Remove-TIOfflinePrograms {
         Emit ('Não foi possível tratar os serviços no registro SYSTEM: {0}' -f $_.Exception.Message) 'Warn'
     } finally {
         if ($skey) { [void](Dismount-TIOfflineHive -Key $skey) }
+    }
+
+    # Limpeza total do fabricante: chaves de configuração, inicialização automática e
+    # tarefas agendadas (registro + arquivos). É o "apaga TUDO" além da pasta/serviços.
+    $targets = New-Object System.Collections.ArrayList
+    foreach ($r in $results) {
+        if (-not @($r.RFolders).Count -and -not [string]$r.RVendorRx) { continue }
+        [void]$targets.Add(@{ VendorRx = [string]$r.RVendorRx; KeyNames = @(Get-TIVendorKeyNames -Folders @($r.RFolders)); Folders = @($r.RFolders) })
+    }
+    if (@($targets).Count -gt 0) {
+        Emit 'Limpando configuração, inicialização automática e tarefas agendadas do fabricante...' 'Info' 92
+        $traces = [pscustomobject]@{ RegKeys = 0; Run = 0; Tasks = 0 }
+        try { $traces = Remove-TIOfflineVendorTraces -Install $Install -Targets @($targets) } catch { Emit ('Não foi possível limpar os rastros do fabricante: {0}' -f $_.Exception.Message) 'Warn' }
+        if (([int]$traces.RegKeys + [int]$traces.Run + [int]$traces.Tasks) -gt 0) {
+            Emit ('Rastros removidos: {0} chave(s) de configuração, {1} de inicialização, {2} tarefa(s) agendada(s).' -f $traces.RegKeys, $traces.Run, $traces.Tasks) 'Success'
+        }
     }
 
     $ok = 0

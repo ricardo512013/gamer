@@ -675,6 +675,18 @@ Assert-Equal 'av: avgsvc ainda casa'     (Get-TISecurityVendor 'avgsvc') 'Avast/
 $svcP = @([pscustomobject]@{ Name='Updater'; Display='Generic Updater'; ImagePath='D:\Program Files\SentinelOne\bin\upd.exe'; Binary='D:\Program Files\SentinelOne\bin\upd.exe' })
 Assert-Equal 'svcsel: fabricante só no caminho não casa' (@(Select-TIItemServices -Services $svcP -Folders @() -VendorRx (Get-TISecurityVendorRx 'SentinelOne')).Count) 0
 Assert-Equal 'svcsel: casa quando a pasta validada é passada' (@(Select-TIItemServices -Services $svcP -Folders @('D:\Program Files\SentinelOne') -VendorRx (Get-TISecurityVendorRx 'SentinelOne')).Count) 1
+# --- Limpeza total: chaves do fabricante, chaves protegidas, inicialização automática ---
+Assert-Equal 'vkeys: pasta do fabricante' ((Get-TIVendorKeyNames @('D:\Program Files\SentinelOne\Sentinel Agent','D:\ProgramData\Sentinel')) -join ',') 'SentinelOne,Sentinel'
+Assert-Equal 'vkeys: x86'                  ((Get-TIVendorKeyNames @('D:\Program Files (x86)\Trend Micro\OfficeScan')) -join ',') 'Trend Micro'
+Assert-Equal 'vkeys: Microsoft protegido'  ((Get-TIVendorKeyNames @('D:\Program Files\Microsoft\Edge')) -join ',') ''
+Assert-Equal 'psk: Microsoft protegido'    (Test-TIProtectedSoftwareKey 'Microsoft') $true
+Assert-Equal 'psk: Windows protegido'      (Test-TIProtectedSoftwareKey 'Windows') $true
+Assert-Equal 'psk: nome curto protegido'   (Test-TIProtectedSoftwareKey 'ab') $true
+Assert-Equal 'psk: SentinelOne livre'      (Test-TIProtectedSoftwareKey 'SentinelOne') $false
+$runV = @{ 'SentinelAgent' = '"C:\Program Files\SentinelOne\agent.exe" --svc'; 'Win' = 'C:\Windows\System32\x.exe'; 'VlcFolder' = 'C:\Program Files\VideoLAN\VLC\vlc.exe' }
+# dado em C: casa com pasta removida em D: (ignora a letra da unidade), e pelo fabricante
+Assert-Equal 'run: casa por pasta (sem letra) e fabricante' ((@(Select-TIRunValues -Values $runV -Folders @('D:\Program Files\VideoLAN\VLC') -VendorRx (Get-TISecurityVendorRx 'SentinelOne')) | Sort-Object) -join ',') 'SentinelAgent,VlcFolder'
+Assert-Equal 'run: sem pasta nem fabricante não casa' (@(Select-TIRunValues -Values @{ 'Win' = 'C:\Windows\System32\x.exe' } -Folders @('D:\Program Files\VideoLAN\VLC') -VendorRx '').Count) 0
 Assert-True  'prog: componente do sistema some' ($null -eq (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'X'; SystemComponent = 1 }))
 Assert-True  'prog: atualização some' ($null -eq (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'Security Update for Microsoft Office (KB123456)' }))
 Assert-Equal 'prog: código MSI' (ConvertFrom-TIUninstallEntry -Values @{ DisplayName = 'App'; WindowsInstaller = 1 } -KeyName '{12345678-90ab-CDEF-1234-567890ABCDEF}').ProductCode '{12345678-90AB-CDEF-1234-567890ABCDEF}'

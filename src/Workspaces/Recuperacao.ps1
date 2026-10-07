@@ -2168,10 +2168,10 @@ function Invoke-RecuperacaoRemovePrograms {
     }
     $keep = @($keep)
     $msg = ("Remoção FORÇADA (offline) de {0} item(ns) do {1} ({2}):`n`n{3}`n`n" +
-            "O que é feito: apaga a pasta do programa (só dentro de Arquivos de Programas, ProgramData ou AppData\Local\Programs, nunca seguindo junções), " +
-            "os atalhos, a entrada na lista de programas e — quando é antivírus/segurança — também os SERVIÇOS e DRIVERS dele e as pastas de dados (ProgramData). " +
+            "Apaga TUDO do programa: a pasta (só em Arquivos de Programas, ProgramData ou AppData\Local\Programs, nunca seguindo junções), os atalhos e a entrada na lista. " +
+            "Quando é antivírus/segurança, apaga também, de raiz: os SERVIÇOS e DRIVERS (e o arquivo .sys), as pastas de DADOS (ProgramData), as chaves de CONFIGURAÇÃO do fabricante (registro), a INICIALIZAÇÃO automática (Run) e as TAREFAS AGENDADAS. " +
             "Em pasta travada pelo antivírus, o TI Suite toma posse e devolve a permissão para conseguir apagar.`n`n" +
-            "O desinstalador do fabricante NÃO roda (o Windows está desligado). Nunca toca nos serviços essenciais do Windows nem nas pastas do sistema. " +
+            "O desinstalador do fabricante NÃO roda (o Windows está desligado). Nunca toca nos serviços essenciais do Windows, nas chaves de topo do sistema nem nas pastas do Windows. " +
             "Use isto para o antivírus/programa que não sai com o PC ligado. Não dá para desfazer.") -f `
             $items.Count, $inst.Label, $inst.Drive, (Get-RecuperacaoProgListText $items)
     $sens = @($items | Where-Object { $_.Sensitive })
