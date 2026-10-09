@@ -18,9 +18,9 @@
 	Escreve VaralCodes na laje do dono: "model:rarity:color:golden,…" (golden = "true"/"false") das pipas
 	fora do ar.
 
-	Requer: Config, Remotes, DataService, MapGen, Leaderboard. NUNCA requer ShopService/EventService/
-	MonetizationService: eles assinam onDuelEnd/onCatch; o Festival é lido de workspace.World (atributo
-	Festival) e o Carretel Automático de DataService.hooks.hasAutoReel(p).
+	Requer: Config, Remotes, DataService, MapGen. NUNCA requer ShopService/EventService/MonetizationService/
+	Leaderboard: eles assinam onDuelEnd/onCatch ou entram por DataService.hooks (addWeekly, hasAutoReel);
+	o Festival é lido de workspace.World (atributo Festival).
 ]]
 
 local Players = game:GetService("Players")
@@ -33,7 +33,6 @@ local Config = require(Shared:WaitForChild("Config"))
 local Remotes = require(Shared:WaitForChild("Remotes"))
 local DataService = require(script.Parent.DataService)
 local MapGen = require(script.Parent.MapGen)
-local Leaderboard = require(script.Parent.Leaderboard)
 
 export type KiteState = {
 	id: number, -- id único no servidor (nome da Configuration)
@@ -257,8 +256,8 @@ local function lajeGoal(k: KiteState): Vector3
 	elseif k.faixa >= 1 then
 		return MapGen.lajeFloor(laje) + Vector3.new(0, Config.FAIXA_HEIGHT_ABOVE_LAJE[k.faixa], 0)
 	end
-	local c = MapGen.carretelPos(laje)
-	return Vector3.new(c.X, Config.LAJE_FLOOR_Y, c.Z)
+	local c = MapGen.carretelPos(laje) -- faixa 0: pousada logo acima do carretel
+	return Vector3.new(c.X, Config.LAJE_FLOOR_Y + Config.FAIXA_HEIGHT_ABOVE_LAJE[0], c.Z)
 end
 
 local function linhaOf(k: KiteState): number
@@ -640,7 +639,7 @@ local function resolveDuel(d: Duel, t: number)
 			data.Stats.Cortes += 1
 			if not loser.wild then
 				data.Stats.CortesPvP += 1
-				Leaderboard.addWeekly(wp, "CortesPvP", 1)
+				DataService.hooks.addWeekly(wp, "CortesPvP", 1)
 			end
 		end
 		onboarding(wp, 4)

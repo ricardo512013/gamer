@@ -63,7 +63,7 @@ Config.SPAWN_POS = Vector3.new(0, 1, -32)
 -- Faixas ----------------------------------------------------------------------------------------
 
 Config.FAIXA_MULT = { [0] = 0.25, [1] = 0.5, [2] = 1.0, [3] = 1.6, [4] = 2.5 } :: { [number]: number }
-Config.FAIXA_HEIGHT_ABOVE_LAJE = { [1] = 35, [2] = 70 } :: { [number]: number } -- faixas 1-2 (y = 61.5 / 96.5)
+Config.FAIXA_HEIGHT_ABOVE_LAJE = { [0] = 4, [1] = 35, [2] = 70 } :: { [number]: number } -- faixas 1-2 (y = 61.5 / 96.5); [0] (impl.) = pousada sobre o carretel
 Config.RING = {
 	[3] = { r = 60, h = 105, omega = 0.05 },
 	[4] = { r = 50, h = 125, omega = 0.08 },
@@ -207,6 +207,7 @@ Config.TOP3_CACHE_SECONDS = 600 -- (impl.) cache do top 3 da semana anterior
 Config.RATE = { -- { por segundo, rajada }
 	Pull = { 6, 10 }, SelectKite = { 2, 4 }, Collect = { 2, 4 }, Buy = { 2, 4 },
 	ClaimStreak = { 1, 2 }, ClaimDaily = { 1, 2 }, Rebirth = { 1, 2 }, Emote = { 0.5, 2 },
+	SetPet = { 2, 4 }, Ready = { 1, 2 }, -- (impl.) remotes SetPet (estimação) e Ready (cliente pronto)
 } :: { [string]: { number } }
 Config.SYNC_HZ = 10
 Config.REMOTE_WAIT = 10 -- (impl.) s que o cliente espera por um remote antes de avisar
@@ -348,21 +349,186 @@ function Config.str(key: string, locale: string, vars: { [string]: any }?): stri
 	return text
 end
 
--- adicionado por área core (KiteService / EventService) ------------------------------------------
-Config.LAND_Y = 1.5 -- adicionado por área core: y do ponto de pouso no campinho (GDD §2.5)
-Config.TELEPORT_WINDOW = 0.5 -- adicionado por área core: janela (s) do anti-teleport (TELEPORT_JUMP studs em 0.5 s)
-Config.EMOTE_SECONDS = 2 -- adicionado por área core: duração do atributo Emote do Player (GDD §5.8)
-Config.COSMETIC_COLORS = 8 -- adicionado por área core: cores cosméticas sorteadas = 1..8 (GDD §1)
-Config.BOOST_VENTO_MULT = 2 -- adicionado por área core: multiplicador do produto Vento Forte (GDD §5.7)
+-- Constantes da implementação (impl.) do KiteService / EventService -------------------------------
+Config.LAND_Y = 1.5 -- (impl.) y do ponto de pouso no campinho (GDD §2.5)
+Config.TELEPORT_WINDOW = 0.5 -- (impl.) janela (s) do anti-teleport (TELEPORT_JUMP studs em 0.5 s)
+Config.EMOTE_SECONDS = 2 -- (impl.) duração do atributo Emote do Player (GDD §5.8)
+Config.COSMETIC_COLORS = 8 -- (impl.) cores cosméticas sorteadas = 1..8 (GDD §1)
+Config.BOOST_VENTO_MULT = 2 -- (impl.) multiplicador do produto Vento Forte (GDD §5.7)
 
--- adicionado por área mapa: textos fixos do mapa (placas e prompts vivem no servidor; pt-BR é o padrão) ----
-Config.STRINGS.ptBR.promptStock = "Ver estoque" -- adicionado por área mapa: ProximityPrompt do balcão do Bar
-Config.STRINGS.en.promptStock = "See stock" -- adicionado por área mapa
-Config.STRINGS.ptBR.rankingTitle = "RANKING DA SEMANA" -- adicionado por área mapa: título da placa do Poste
-Config.STRINGS.en.rankingTitle = "WEEKLY RANKING" -- adicionado por área mapa
-Config.STRINGS.ptBR.rankingKing = "REI DA LAJE" -- adicionado por área mapa: coluna Vento da semana (GDD §3.1)
-Config.STRINGS.en.rankingKing = "ROOFTOP KING" -- adicionado por área mapa
-Config.STRINGS.ptBR.rankingScissors = "TESOURA DE OURO" -- adicionado por área mapa: coluna Cortes PvP (GDD §3.1)
-Config.STRINGS.en.rankingScissors = "GOLDEN SCISSORS" -- adicionado por área mapa
+-- Textos fixos do mapa (placas e prompts são criados no servidor; pt-BR é o padrão) ----------------
+Config.STRINGS.ptBR.promptStock = "Ver estoque" -- (impl.) ProximityPrompt do balcão do Bar
+Config.STRINGS.en.promptStock = "See stock"
+Config.STRINGS.ptBR.rankingTitle = "RANKING DA SEMANA" -- (impl.) título da placa do Poste
+Config.STRINGS.en.rankingTitle = "WEEKLY RANKING"
+Config.STRINGS.ptBR.rankingKing = "REI DA LAJE" -- (impl.) coluna Vento da semana (GDD §3.1)
+Config.STRINGS.en.rankingKing = "ROOFTOP KING"
+Config.STRINGS.ptBR.rankingScissors = "TESOURA DE OURO" -- (impl.) coluna Cortes PvP (GDD §3.1)
+Config.STRINGS.en.rankingScissors = "GOLDEN SCISSORS"
+
+-- Cliente (impl.): constantes do HUD/KiteRenderer, paleta §1, ordem da Loja de passes e strings -----
+Config.SEASON_HUE = { step = 0.1, sat = 0.8, val = 1 } -- (impl.) cor da Temporada n = HSV((n×step)%1, sat, val) (GDD §1)
+Config.RABIOLA_COLORS = { Color3.fromRGB(255, 190, 40), Color3.fromRGB(200, 200, 210), Color3.fromRGB(205, 127, 50) } -- (impl.) RabiolaRank 1-3 (ouro/prata/bronze)
+Config.PASS_ORDER = { "PASS_VENTO_DOBRO", "PASS_CARRETEL_AUTO", "PASS_VIP", "PASS_KIT" } -- (impl.) ordem na Loja (GDD §5.7)
+Config.PRODUCT_ORDER = { "PROD_RAJADA", "PROD_VENTO_FORTE", "PROD_RESGATE", "PROD_GUARDAR_STREAK" }
+Config.PALETTE = { -- (impl.) paleta do GDD §1 (RGB)
+	Sky = Color3.fromRGB(90, 180, 255), Red = Color3.fromRGB(235, 60, 50), Sun = Color3.fromRGB(255, 205, 60),
+	Hill = Color3.fromRGB(95, 185, 90), Dirt = Color3.fromRGB(150, 105, 60), Asphalt = Color3.fromRGB(60, 60, 65),
+	Laje = Color3.fromRGB(255, 140, 60), Pink = Color3.fromRGB(255, 120, 170), Lilac = Color3.fromRGB(170, 130, 230),
+	UIBg = Color3.fromRGB(30, 30, 45), UIText = Color3.fromRGB(255, 255, 255), Outline = Color3.fromRGB(20, 20, 30),
+	Gray = Color3.fromRGB(190, 190, 190), Green = Color3.fromRGB(80, 200, 100), White = Color3.fromRGB(245, 245, 245),
+}
+Config.CLIENT = { -- (impl.) números do render e do HUD (GDD §2.9, §4.3, §6)
+	-- KiteRenderer
+	TAIL_HIDE_DIST = 150, -- rabiola escondida além disto (studs da câmera)
+	TAIL_PARTS = 3, -- Parts por rabiola
+	TAIL_SWAY = 0.35, -- amplitude (studs) do balanço senoidal
+	TAIL_HZ = 0.5, -- ciclos/s do balanço
+	SNAP_DIST = 80, -- salto de Pos maior que isto não interpola (recall / spawn)
+	CATCHUP = 4, -- velocidade de alcance = max(KITE_MOVE_SPEED, distância × CATCHUP)
+	TILT_DEG = 20, -- inclinação da pipa para trás
+	DUEL_SHAKE = 0.6, -- tremor em duelo (studs)
+	DUEL_SHAKE_HZ = 12,
+	DUEL_SPARKS = 4, -- Parts amarelas no ponto médio
+	DUEL_SPARK_SIZE = 0.4,
+	DUEL_BLINK_HZ = 6,
+	FALL_SPIN_Y = 360, -- graus/s em Y na queda
+	FALL_SPIN_Z = 90, -- graus/s em Z na queda
+	MARKER_SIZE = Vector3.new(2, 200, 2), -- coluna Neon no LandPos
+	MARKER_TRANSPARENCY = 0.35,
+	SHRINK_SECONDS = 0.3, -- pega: a pipa encolhe até sumir
+	TRAIL_PARTS = 6, -- rastro do rabeio
+	TRAIL_SIZE = 0.3,
+	TRAIL_SECONDS = 0.4,
+	BURST_PARTS = 8, -- coleta no carretel
+	BURST_SIZE = 0.5,
+	BURST_SECONDS = 0.5,
+	ARROW_SIZE = Vector3.new(2, 2, 3), -- seta de onboarding (WedgePart Neon)
+	ARROW_HEIGHT = 5, -- studs acima do alvo
+	ARROW_BOB = 1, -- ±1 stud
+	ARROW_SPIN = 1.5, -- rad/s
+	BILLBOARD_DIST = 300, -- MaxDistance do nome da pipa
+	BILLBOARD_UP = 2.2, -- studs acima do corpo
+	VARAL_SCALE = 0.4, -- miniaturas do varal
+	VARAL_STEP = 2, -- 8 vagas a cada 2 studs
+	VARAL_HANG = 1.0, -- studs abaixo da linha
+	LINE_THICKNESS = 0.15,
+	LINE_ANCHOR_UP = 1.5, -- topo do carretel (raio do Cylinder)
+	GOLDEN_PARTICLES = 4, -- ParticleEmitter por segundo
+	EMOTE_BUBBLE_UP = 2.5,
+	-- HUD
+	BUTTON_HEIGHT = 0.16, -- fração da altura da tela
+	BUTTON_MIN_PX = 128,
+	MIN_TEXT_PX = 14,
+	STROKE_PX = 3,
+	PRESS_SCALE = 0.9,
+	PRESS_SECONDS = 0.08,
+	POP_SCALE = 1.3,
+	POP_SECONDS = 0.25,
+	FULLSCREEN_SECONDS = 1.2,
+	FULLSCREEN_FROM = 1.4,
+	TOAST_SECONDS = 3,
+	TOAST_MAX = 4,
+	PET_HOLD = 1, -- toque longo na carta = estimação
+	COUNT_UP = 6, -- count-up do Vento (fração da diferença por segundo)
+	SLOW_TICK = 0.2, -- s entre checagens de distância e relógios
+	HAPTIC_SECONDS = 0.3,
+	BLINK_HZ = 4, -- "SEGURA!" piscando
+	RING_HZ = 1.2, -- anel pulsante do onboarding
+	PRICE_CACHE = 600, -- s de cache dos preços da Loja
+	LAND_MEMORY = 40, -- s que o HUD lembra o último LandPos (seta "CORRE!")
+	PANEL_TWEEN = 0.18,
+}
+-- Strings do HUD/KiteRenderer (impl.) ----------------------------------------------------------------
+local ptBR, en = Config.STRINGS.ptBR, Config.STRINGS.en
+ptBR.close, en.close = "FECHAR", "CLOSE"
+ptBR.confirm, en.confirm = "CONFIRMAR", "CONFIRM"
+ptBR.btnBar, en.btnBar = "BAR", "BAR"
+ptBR.btnMail, en.btnMail = "CORREIO", "MAIL"
+ptBR.btnRebirth, en.btnRebirth = "RENASCER", "REBIRTH"
+ptBR.btnShop, en.btnShop = "LOJA", "SHOP"
+ptBR.btnSound, en.btnSound = "SOM", "SOUND"
+ptBR.soundState, en.soundState = "Som: {state}", "Sound: {state}"
+ptBR.on, en.on = "LIGADO", "ON"
+ptBR.off, en.off = "DESLIGADO", "OFF"
+ptBR.band, en.band = "Faixa {n} · {name} ×{mult}", "Band {n} · {name} ×{mult}"
+ptBR.you, en.you = "Você", "You"
+ptBR.duelVs, en.duelVs = "{a}  ×  {b} (L{linha})", "{a}  ×  {b} (L{linha})"
+ptBR.pet, en.pet = "★ Estimação", "★ Pet"
+ptBR.inAir, en.inAir = "NO AR", "IN AIR"
+ptBR.max, en.max = "MÁX", "MAX"
+ptBR.special, en.special = "ESPECIAL", "SPECIAL"
+ptBR.soon, en.soon = "Em breve", "Coming soon"
+ptBR.robux, en.robux = "{n} R$", "R$ {n}"
+ptBR.vento, en.vento = "{n} Vento", "{n} Wind"
+ptBR.epicOk, en.epicOk = "1 Épica no varal: ✓", "1 Epic on the clothesline: ✓"
+ptBR.epicNo, en.epicNo = "1 Épica no varal: ✗", "1 Epic on the clothesline: ✗"
+ptBR.rebirthBonus, en.rebirthBonus = "+15 % de Vento permanente", "+15 % permanent Wind"
+ptBR.rebirthMax, en.rebirthMax = "Temporada máxima!", "Max season!"
+ptBR.boostRajada, en.boostRajada = "{name} pagou uma Rajada!", "{name} paid for a Gust!"
+ptBR.boostVento, en.boostVento = "{name} pagou Vento Forte!", "{name} paid for Strong Wind!"
+ptBR.renasceu, en.renasceu = "NOVA TEMPORADA {n}!", "NEW SEASON {n}!"
+ptBR.streakGot, en.streakGot = "Dia {day}: +{n} Vento", "Day {day}: +{n} Wind"
+ptBR.goldenBlank, en.goldenBlank = "O vento passou em branco…", "The wind passed by…"
+ptBR.eventNow, en.eventNow = "▲ {event} — {time}", "▲ {event} — {time}"
+ptBR.eventWarn, en.eventWarn = "✂ {event} em {time}", "✂ {event} in {time}"
+ptBR.boostBanner, en.boostBanner = "★ {event} — {time} ({name})", "★ {event} — {time} ({name})"
+ptBR.flewWild, en.flewWild = "Uma {kite} selvagem voou!", "A wild {kite} flew away!"
+ptBR.offlineTitle, en.offlineTitle = "Enquanto você saiu…", "While you were away…"
+ptBR.stockEmpty, en.stockEmpty = "Sem estoque", "No stock"
+ptBR.linhaMax, en.linhaMax = "Linha no máximo", "Line maxed"
+ptBR.vagaMax, en.vagaMax = "Varal completo", "Clothesline maxed"
+ptBR.claimed, en.claimed = "RESGATADO", "CLAIMED"
+ptBR.hours, en.hours = "{h} h {m}", "{h} h {m}"
+ptBR.minutes, en.minutes = "{m} min", "{m} min"
+ptBR.errDefault, en.errDefault = "Não deu certo", "That didn't work"
+ptBR.passes, en.passes = "PASSES", "PASSES"
+ptBR.products, en.products = "PRODUTOS", "PRODUCTS"
+ptBR.item_PASS_VENTO_DOBRO, en.item_PASS_VENTO_DOBRO = "Vento em Dobro", "Double Wind"
+ptBR.item_PASS_CARRETEL_AUTO, en.item_PASS_CARRETEL_AUTO = "Carretel Automático", "Auto Reel"
+ptBR.item_PASS_VIP, en.item_PASS_VIP = "VIP da Laje", "Rooftop VIP"
+ptBR.item_PASS_KIT, en.item_PASS_KIT = "Kit Pipeiro", "Kiter Kit"
+ptBR.item_PROD_RAJADA, en.item_PROD_RAJADA = "Rajada no Servidor", "Server Gust"
+ptBR.item_PROD_VENTO_FORTE, en.item_PROD_VENTO_FORTE = "Vento Forte", "Strong Wind"
+ptBR.item_PROD_RESGATE, en.item_PROD_RESGATE = "Resgatar da Árvore", "Rescue from Tree"
+ptBR.item_PROD_GUARDAR_STREAK, en.item_PROD_GUARDAR_STREAK = "Guardar Streak", "Save Streak"
+
+-- Economia (impl.): ShopService / MonetizationService / Leaderboard -------------------------------
+Config.SHOP_SLOTS_NORMAL = 4 -- (impl.) slots normais do Bar (SHOP_TABLE) (GDD §5.2)
+Config.SHOP_SLOTS_SPECIAL = 1 -- (impl.) slots especiais do Bar (SHOP_SPECIAL_TABLE) (GDD §5.2)
+Config.STREAK_REPEAT_MULT = 2 -- (impl.) D8-D28 repetem o ciclo com Vento ×2 (GDD §5.4)
+Config.PASS_VENTO_DOBRO_MULT = 2 -- (impl.) multiplicador do passe Vento em Dobro (GDD §5.7)
+Config.RECEIPT_SAVE_TIMEOUT = 30 -- (impl.) s que o ProcessReceipt espera o Save antes de NotProcessedYet
+Config.LEADERBOARD_TOP = 10 -- (impl.) entradas por coluna no Poste (GetSortedAsync) (GDD §5.5)
+Config.RABIOLA_TOP = 3 -- (impl.) top N da semana anterior que recebe RabiolaRank (GDD §5.5)
+-- Toast("Erro", {msg, key, vars}): msg já em pt-BR; o HUD pode relocalizar com Config.str(key, locale, vars).
+Config.STRINGS.ptBR.errFarBar = "Chegue mais perto do Bar do Vento"
+Config.STRINGS.en.errFarBar = "Get closer to the Wind Bar"
+Config.STRINGS.ptBR.errVento = "Vento insuficiente (precisa de {n})"
+Config.STRINGS.en.errVento = "Not enough Wind (needs {n})"
+Config.STRINGS.ptBR.errBought = "Você já comprou este slot neste estoque"
+Config.STRINGS.en.errBought = "You already bought this slot this restock"
+Config.STRINGS.ptBR.errMaxLinha = "Linha de Vento já no nível máximo"
+Config.STRINGS.en.errMaxLinha = "Wind Line already at max level"
+Config.STRINGS.ptBR.errMaxVagas = "Varal já com todas as vagas"
+Config.STRINGS.en.errMaxVagas = "Clothesline already has every slot"
+Config.STRINGS.ptBR.errStreak = "Correio já resgatado hoje"
+Config.STRINGS.en.errStreak = "Mail already claimed today"
+Config.STRINGS.ptBR.errDaily = "Missão ainda não concluída (ou já resgatada)"
+Config.STRINGS.en.errDaily = "Quest not done yet (or already claimed)"
+Config.STRINGS.ptBR.errRebirth = "Renascer precisa de {vento} Vento e 1 pipa Épica no varal"
+Config.STRINGS.en.errRebirth = "Rebirth needs {vento} Wind and 1 Epic kite"
+Config.STRINGS.ptBR.errRebirthMax = "Você já está na temporada máxima"
+Config.STRINGS.en.errRebirthMax = "You are already at the max season"
+Config.STRINGS.ptBR.errDuel = "Espere o duelo acabar"
+Config.STRINGS.en.errDuel = "Wait for the duel to end"
+Config.STRINGS.ptBR.errPetMax = "Só {n} pipa(s) de estimação por vez"
+Config.STRINGS.en.errPetMax = "Only {n} pet kite(s) at a time"
+Config.STRINGS.ptBR.errNoTree = "Nenhuma pipa sua está presa na árvore"
+Config.STRINGS.en.errNoTree = "None of your kites is stuck in the tree"
+Config.STRINGS.ptBR.errSaverUsed = "Guardar Streak já foi usado nesta semana"
+Config.STRINGS.en.errSaverUsed = "Streak Saver already used this week"
+Config.STRINGS.ptBR.errProduct = "Compra registrada, mas não havia o que conceder"
+Config.STRINGS.en.errProduct = "Purchase recorded, but there was nothing to grant"
 
 return Config

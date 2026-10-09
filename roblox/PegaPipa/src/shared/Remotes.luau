@@ -13,10 +13,13 @@ local Remotes = {}
 
 Remotes.FOLDER_NAME = "Remotes"
 
--- C→S: Pull, SelectKite, Collect, Buy, ClaimStreak, ClaimDaily, Rebirth, Emote
+-- C→S (GDD §7.3): Pull, SelectKite, Collect, Buy, ClaimStreak, ClaimDaily, Rebirth, Emote.
+--   (impl.) SetPet (kiteId): toque longo na carta do varal marca/desmarca estimação (ShopService.setPet).
+--   (impl.) Ready (): o LocalScript acabou de conectar State/Toast/ShopStock; o DataService reenvia o State
+--   completo (e o popup Offline pendente) e o ShopService o estoque — o load do perfil pode ter disparado antes.
 -- S→C: State, Toast, ShopStock
 Remotes.NAMES = {
-	"Pull", "SelectKite", "Collect", "Buy", "ClaimStreak", "ClaimDaily", "Rebirth", "Emote",
+	"Pull", "SelectKite", "Collect", "Buy", "ClaimStreak", "ClaimDaily", "Rebirth", "Emote", "SetPet", "Ready",
 	"State", "Toast", "ShopStock",
 } :: { string }
 

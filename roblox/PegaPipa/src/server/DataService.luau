@@ -12,6 +12,9 @@
 	- Todo número vive em Config.
 	- Quem altera profile.Data diretamente (ShopService, KiteService…) chama
 	  DataService.pushState(p, { Campo = valor }) com os campos que mudou.
+	- Remote Ready: o LocalScript pode conectar State/Toast depois de o perfil carregar; no Ready o State
+	  completo é reenviado e o popup Offline que ficou pendente vai junto.
+	- Passo 3 do funil (PrimeiraColeta, §5.8) é logado em collect().
 ]]
 
 local Players = game:GetService("Players")
@@ -55,6 +58,7 @@ export type Profile = {
 local STORE_NAME = "PegaPipa_v1"
 local KICK_LOAD_FAILED = "Falha ao carregar seus dados. Tente entrar de novo."
 local KICK_SESSION_END = "Seus dados foram abertos em outro servidor. Entre de novo."
+local STEP_COLETA = table.find(Config.ONBOARDING_STEPS, "PrimeiraColeta") or 3 -- passo do funil (§5.8)
 
 -- MapGen só é requerido dentro das funções (depois de MapGen.start()).
 local function map()
@@ -104,6 +108,9 @@ local loadedCallbacks: { (p: Player, data: ProfileData) -> () } = {}
 local stateRemote: RemoteEvent? = nil
 local toastRemote: RemoteEvent? = nil
 local collectLimiter = Remotes.limiter(Config.RATE.Collect[1], Config.RATE.Collect[2])
+local readyLimiter = Remotes.limiter(Config.RATE.Ready[1], Config.RATE.Ready[2])
+local clientReady: { [Player]: boolean } = {} -- o LocalScript já mandou Ready (ouve State/Toast)
+local pendingOffline: { [Player]: Patch } = {} -- popup Offline esperando o cliente ficar pronto
 
 -- Enum.AnalyticsEconomyTransactionType por fonte/sumidouro (padrão: Gameplay)
 local TRANSACTION_TYPE: { [string]: string } = {
@@ -139,6 +146,18 @@ local function logEconomy(p: Player, flow: Enum.AnalyticsEconomyFlowType, amount
 	print(`[Economia] {p.Name} {flow.Name} {kind} {math.floor(amount)} → saldo {math.floor(balance)}`)
 	pcall(function()
 		AnalyticsService:LogEconomyEvent(p, flow, "Vento", math.floor(amount), math.floor(balance), TRANSACTION_TYPE[kind] or "Gameplay", kind)
+	end)
+end
+
+-- Passo do funil de onboarding (§5.8): só avança; loga no AnalyticsService.
+local function onboarding(p: Player, data: ProfileData, step: number)
+	if data.Onboarding >= step then
+		return
+	end
+	data.Onboarding = step
+	DataService.pushState(p, { Onboarding = step })
+	pcall(function()
+		AnalyticsService:LogOnboardingFunnelStepEvent(p, step, Config.ONBOARDING_STEPS[step])
 	end)
 end
 
@@ -305,6 +324,7 @@ function DataService.collect(p: Player): number
 	data.Carretel = 0
 	creditVento(p, data, n, "Renda")
 	DataService.pushState(p, { Vento = data.Vento, Carretel = 0 })
+	onboarding(p, data, STEP_COLETA)
 	return n
 end
 
@@ -511,7 +531,12 @@ local function creditOffline(p: Player, data: ProfileData)
 		return
 	end
 	creditVento(p, data, amount, "Offline")
-	DataService.toast(p, "Offline", { n = amount, time = elapsed })
+	local args: Patch = { n = amount, time = elapsed }
+	if clientReady[p] then
+		DataService.toast(p, "Offline", args)
+	else
+		pendingOffline[p] = args -- o LocalScript ainda não ouve o Toast: vai junto com o Ready
+	end
 end
 
 local function onProfileLoaded(p: Player, data: ProfileData)
@@ -590,6 +615,9 @@ local function onPlayerRemoving(p: Player)
 	rateCache[p] = nil
 	rendaAcc[p] = nil
 	collectLimiter:forget(p)
+	readyLimiter:forget(p)
+	clientReady[p] = nil
+	pendingOffline[p] = nil
 end
 
 -- Tick de renda (INCOME_TICK s) ------------------------------------------------------------------
@@ -668,6 +696,25 @@ local function hookCarretel(inst: Instance)
 	end
 end
 
+-- Remote Ready: o LocalScript acabou de conectar State/Toast/ShopStock. Reenvia o State completo (o load do
+-- perfil pode ter disparado antes de o cliente ouvir) e o popup Offline que ficou pendente.
+local function onReady(p: Player)
+	if not readyLimiter:allow(p) then
+		return
+	end
+	clientReady[p] = true
+	local data = dataOf(p)
+	if not data then
+		return -- o perfil ainda não carregou: o load manda tudo
+	end
+	DataService.pushState(p, fullState(p, data))
+	local pending = pendingOffline[p]
+	if pending then
+		pendingOffline[p] = nil
+		DataService.toast(p, "Offline", pending)
+	end
+end
+
 function DataService.start(): ()
 	stateRemote = Remotes.get("State")
 	toastRemote = Remotes.get("Toast")
@@ -676,6 +723,7 @@ function DataService.start(): ()
 			DataService.collect(p)
 		end
 	end)
+	Remotes.get("Ready").OnServerEvent:Connect(onReady)
 	for _, inst in CollectionService:GetTagged("Carretel") do
 		hookCarretel(inst)
 	end
