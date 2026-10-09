@@ -1,0 +1,46 @@
+{
+  "name": "PegaPipa",
+  "emitLegacyScripts": true,
+  "globIgnorePaths": ["**/*.md", "**/.DS_Store"],
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "Shared": { "$path": "src/shared" }
+    },
+
+    "ServerScriptService": {
+      "Services": { "$path": "src/server" }
+    },
+
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "Client": { "$path": "src/client" }
+      }
+    },
+
+    "Workspace": {
+      "$properties": {
+        "SignalBehavior": "Deferred",
+        "StreamingEnabled": false
+      }
+    },
+
+    "Lighting": {
+      "$properties": {
+        "ClockTime": 16.5,
+        "Brightness": 2,
+        "GlobalShadows": false,
+        "OutdoorAmbient": [0.549, 0.627, 0.745]
+      },
+      "Atmosphere": {
+        "$className": "Atmosphere",
+        "$properties": { "Density": 0.25, "Haze": 1.0, "Glare": 0.1 }
+      }
+    },
+
+    "HttpService": {
+      "$properties": { "HttpEnabled": false }
+    }
+  }
+}
