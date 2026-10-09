@@ -12,7 +12,10 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Remotes = require(Shared:WaitForChild("Remotes"))
 
 local function boot(name: string, fn: () -> ())
-	local ok, err = pcall(fn)
+	local ok, err = pcall(function(): string?
+		fn()
+		return nil
+	end)
 	if ok then
 		print(`[PegaPipa] {name} ok`)
 	else

@@ -348,4 +348,21 @@ function Config.str(key: string, locale: string, vars: { [string]: any }?): stri
 	return text
 end
 
+-- adicionado por área core (KiteService / EventService) ------------------------------------------
+Config.LAND_Y = 1.5 -- adicionado por área core: y do ponto de pouso no campinho (GDD §2.5)
+Config.TELEPORT_WINDOW = 0.5 -- adicionado por área core: janela (s) do anti-teleport (TELEPORT_JUMP studs em 0.5 s)
+Config.EMOTE_SECONDS = 2 -- adicionado por área core: duração do atributo Emote do Player (GDD §5.8)
+Config.COSMETIC_COLORS = 8 -- adicionado por área core: cores cosméticas sorteadas = 1..8 (GDD §1)
+Config.BOOST_VENTO_MULT = 2 -- adicionado por área core: multiplicador do produto Vento Forte (GDD §5.7)
+
+-- adicionado por área mapa: textos fixos do mapa (placas e prompts vivem no servidor; pt-BR é o padrão) ----
+Config.STRINGS.ptBR.promptStock = "Ver estoque" -- adicionado por área mapa: ProximityPrompt do balcão do Bar
+Config.STRINGS.en.promptStock = "See stock" -- adicionado por área mapa
+Config.STRINGS.ptBR.rankingTitle = "RANKING DA SEMANA" -- adicionado por área mapa: título da placa do Poste
+Config.STRINGS.en.rankingTitle = "WEEKLY RANKING" -- adicionado por área mapa
+Config.STRINGS.ptBR.rankingKing = "REI DA LAJE" -- adicionado por área mapa: coluna Vento da semana (GDD §3.1)
+Config.STRINGS.en.rankingKing = "ROOFTOP KING" -- adicionado por área mapa
+Config.STRINGS.ptBR.rankingScissors = "TESOURA DE OURO" -- adicionado por área mapa: coluna Cortes PvP (GDD §3.1)
+Config.STRINGS.en.rankingScissors = "GOLDEN SCISSORS" -- adicionado por área mapa
+
 return Config

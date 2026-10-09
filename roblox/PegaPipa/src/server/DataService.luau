@@ -29,9 +29,28 @@ local ProfileStore = require(script.Parent.ProfileStore)
 
 export type ProfileData = Config.ProfileData
 export type KiteData = Config.KiteData
-export type Profile = ProfileStore.Profile<ProfileData>
 export type Patch = { [string]: any }
 export type WeeklyStat = "Vento" | "CortesPvP"
+
+-- Perfil do ProfileStore visto pelo jogo, com Data/LastSavedData tipados como ProfileData.
+-- (O genérico vendorizado `Profile<T>` usa `T & JSONAcceptable`, que o luau-lsp não unifica;
+-- o cast para este tipo acontece uma única vez, em onPlayerAdded.)
+type Connection = { Disconnect: (self: any) -> () }
+export type Profile = {
+	Data: ProfileData,
+	LastSavedData: ProfileData, -- último snapshot salvo (idempotência do ProcessReceipt)
+	Key: string,
+	UserIds: { number },
+	OnSave: { Connect: (self: any, listener: () -> ()) -> Connection },
+	OnLastSave: { Connect: (self: any, listener: (reason: string) -> ()) -> Connection },
+	OnSessionEnd: { Connect: (self: any, listener: () -> ()) -> Connection },
+	OnAfterSave: { Connect: (self: any, listener: (lastSaved: ProfileData) -> ()) -> Connection },
+	IsActive: (self: Profile) -> boolean,
+	Reconcile: (self: Profile) -> (),
+	EndSession: (self: Profile) -> (),
+	AddUserId: (self: Profile, userId: number) -> (),
+	Save: (self: Profile) -> (),
+}
 
 local STORE_NAME = "PegaPipa_v1"
 local KICK_LOAD_FAILED = "Falha ao carregar seus dados. Tente entrar de novo."
@@ -165,7 +184,7 @@ local function registerFriends(p: Player)
 	for _, other in Players:GetPlayers() do
 		if other ~= p then
 			task.spawn(function()
-				local ok, isFriend = pcall(p.IsFriendsWith, p, other.UserId)
+				local ok, isFriend = pcall(p.IsFriendsWithAsync, p, other.UserId)
 				local mine, theirs = friendsOf[p], friendsOf[other]
 				if ok and isFriend == true and mine and theirs then
 					mine[other] = true
@@ -525,11 +544,12 @@ local function onPlayerAdded(p: Player)
 	while not storeDecided do
 		task.wait()
 	end
-	local profile = activeStore:StartSessionAsync(`User_{p.UserId}`, { Steal = false })
-	if profile == nil then
+	local raw = activeStore:StartSessionAsync(`User_{p.UserId}`, { Steal = false })
+	if raw == nil then
 		p:Kick(KICK_LOAD_FAILED)
 		return
 	end
+	local profile = (raw :: any) :: Profile
 	profile:AddUserId(p.UserId)
 	profile:Reconcile()
 	profile.OnSessionEnd:Connect(function()
@@ -607,7 +627,10 @@ local function startTick()
 		while true do
 			local dt = task.wait(Config.INCOME_TICK)
 			for p in profiles do
-				local ok, err = pcall(tickPlayer, p, dt)
+				local ok, err = pcall(function(): string?
+					tickPlayer(p, dt)
+					return nil
+				end)
 				if not ok then
 					warn(`[DataService] tick de {p.Name} falhou: {err}`)
 				end

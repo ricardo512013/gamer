@@ -10,7 +10,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
-local DataService = require(script.Parent.DataService)
+-- implementação real: local DataService = require(script.Parent.DataService) e KiteService
 
 export type StockSlot = { model: string, rarity: number, price: number, special: boolean }
 export type Stock = { seed: number, restockAt: number, slots: { StockSlot } }
